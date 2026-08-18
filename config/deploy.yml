@@ -1,0 +1,64 @@
+service: raises
+image: raises
+
+servers:
+  web:
+    - <%= ENV.fetch("KAMAL_HOST") %>
+
+proxy:
+  ssl: true
+  host: <%= ENV.fetch("KAMAL_PROXY_HOST") %>
+  app_port: 8080
+  response_timeout: 30
+  healthcheck:
+    path: /readyz
+    interval: 2
+    timeout: 2
+  buffering:
+    requests: true
+    responses: true
+    max_request_body: 4194304
+    max_response_body: 4194304
+    memory: 4194304
+
+registry:
+  server: <%= ENV.fetch("KAMAL_REGISTRY_SERVER", "localhost:5555") %>
+
+env:
+  secret:
+    - GITHUB_APP_ID
+    - GITHUB_APP_CLIENT_ID
+    - GITHUB_APP_CLIENT_SECRET
+    - GITHUB_APP_PRIVATE_KEY
+    - GITHUB_APP_WEBHOOK_SECRET
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+    - NTFY_TOKEN
+    - NTFY_TOPIC
+    - WEBHOOK_ENCRYPTION_KEY
+  clear:
+    LISTEN_ADDRESS: ":8080"
+    DATABASE_PATH: /data/raises.db
+    BASE_URL: <%= ENV.fetch("KAMAL_BASE_URL").inspect %>
+    GITHUB_APP_SLUG: <%= ENV.fetch("GITHUB_APP_SLUG", "raises").inspect %>
+    INITIAL_OWNER_GITHUB_ID: <%= ENV.fetch("INITIAL_OWNER_GITHUB_ID", "0").inspect %>
+    DISABLE_LEGACY_TOKENS: <%= ENV.fetch("DISABLE_LEGACY_TOKENS", "0").inspect %>
+    REPORT_ENABLED: <%= ENV.fetch("REPORT_ENABLED", "0").inspect %>
+    REPORT_EMAIL_FROM: <%= ENV.fetch("REPORT_EMAIL_FROM", "").inspect %>
+    REPORT_EMAIL_TO: <%= ENV.fetch("REPORT_EMAIL_TO", "").inspect %>
+    REPORT_TIMEZONE: <%= ENV.fetch("REPORT_TIMEZONE", "UTC").inspect %>
+    REPORT_SEND_AT: <%= ENV.fetch("REPORT_SEND_AT", "07:00").inspect %>
+    OPERATIONAL_ALERTS_ENABLED: <%= ENV.fetch("OPERATIONAL_ALERTS_ENABLED", "0").inspect %>
+    NTFY_ENABLED: <%= ENV.fetch("NTFY_ENABLED", "0").inspect %>
+    NTFY_BASE_URL: <%= ENV.fetch("NTFY_BASE_URL", "https://ntfy.sh").inspect %>
+    AWS_REGION: <%= ENV.fetch("AWS_REGION", "").inspect %>
+    AWS_EC2_METADATA_DISABLED: "true"
+
+volumes:
+  - "raises_data:/data"
+
+builder:
+  arch: amd64
+
+ssh:
+  user: <%= ENV.fetch("KAMAL_SSH_USER") %>

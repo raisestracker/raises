@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gemspec
+
+gem "minitest", "~> 5.0"
+gem "railties", ENV["RAILS_VERSION"] if ENV["RAILS_VERSION"]
+gem "rake", "~> 13.0"
+
+group :development do
+  gem "bundler-audit", "= 0.9.3", require: false
+  gem "rubocop", "= 1.89.0", require: false
+end

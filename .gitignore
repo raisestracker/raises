@@ -1,0 +1,12 @@
+/data/
+/tmp/
+/node_modules/
+/.env
+/.kamal/deploy.env
+/.kamal/secrets
+*.db
+*.db-wal
+*.db-shm
+/gem/pkg/
+/gem/vendor/bundle/
+/gem/Gemfile.lock

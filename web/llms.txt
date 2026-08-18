@@ -1,0 +1,34 @@
+# Raises
+
+> Error reporting for coding agents, not dashboards.
+
+Raises receives Rails exceptions, groups recurrences, optionally files GitHub issues, and exposes the evidence to an authenticated coding agent.
+
+## Setup
+
+Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.dev/migration.md before editing the application. Inventory adjacent observability features and verify Raises in parallel before removing the existing provider.
+
+1. Ask the human to sign in at https://raises.dev and create a one-time bootstrap prompt.
+2. Exchange its bootstrap token with `POST https://raises.dev/v1/bootstrap/exchange` and store the returned agent token securely as `RAISES_AGENT_TOKEN`. Never print or commit it.
+3. Create a project with `POST /v1/projects`.
+4. Create an ingestion credential with `POST /v1/projects/:id/ingestion-tokens`; store it in the Rails application's secret manager as `RAISES_TOKEN`.
+5. Add `gem "raises", "~> 0.3"` and set `RAISES_URL=https://raises.dev`. Optionally set `RAISES_SPOOL_DIR` to private persistent storage for disk-backed delivery retries.
+6. If the human installed the optional GitHub App, list `/v1/github/repositories` and bind the chosen repository to the project.
+7. Send a controlled test exception and verify it through `/v1/errors?app=<project-slug>&unacked=1`.
+
+All agent API requests except bootstrap exchange and notice ingestion use `Authorization: Bearer $RAISES_AGENT_TOKEN`.
+
+## Error workflow
+
+Read the group and recent notices through the API, inspect the referenced application code, reproduce and fix the failure, run relevant tests, open a draft pull request referencing the group's GitHub issue URL, then acknowledge with `POST /v1/errors/:id/ack`. Do not close the GitHub issue manually and do not paste backtraces into prompts when the API is available.
+
+Suppress a known false positive with `POST /v1/errors/:id/suppress`. Suppression is store-only for that exact group: Raises keeps notices and increments counts, but future recurrences do not clear acknowledgement, do not enqueue webhooks or ntfy, and do not open or reopen GitHub issues. The group disappears from `unacked=1` listings without deleting evidence. Restore normal behavior for future occurrences with `POST /v1/errors/:id/unsuppress`; unsuppress never retroactively delivers missed notifications or changes an existing GitHub issue.
+
+Full skill: https://raises.dev/skill.md
+Migration guide: https://raises.dev/migration.md
+
+## Informational notices and webhooks
+
+Use `Raises.notify("message", level: :info, context: {}, source: nil)` for an operational event that is not an exception. Valid levels are `info`, `warning`, and `error`. These notices are retained for 30 days, available at `GET /v1/events`, and delivered to configured integrations. They never create error groups or GitHub issues.
+
+Agents can create up to three account-scoped outbound webhook endpoints through `/v1/webhook-endpoints`. Raises signs each delivery and retries transient failures. See https://raises.dev/skill.md and https://github.com/raisestracker/raises/blob/master/docs/api.md for the exact contract.

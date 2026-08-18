@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - run: go test -race ./...
+      - run: go vet ./...
+
+  gem:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gem
+    strategy:
+      fail-fast: false
+      matrix:
+        rails: ["~> 7.1.0", "~> 7.2.0", "~> 8.0.0", "~> 8.1.0"]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gem/Gemfile
+      RAILS_VERSION: ${{ matrix.rails }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: gem
+      - run: bundle exec rake test
+      - run: gem build raises.gemspec --output /tmp/raises.gem
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose --env-file .env.example config
+      - run: docker compose --env-file .env.example up --build -d
+      - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/healthz
+      - run: curl --fail http://127.0.0.1:8080/readyz
+      - if: always()
+        run: docker compose --env-file .env.example down --volumes

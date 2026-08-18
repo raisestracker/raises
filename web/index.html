@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>raises — error reporting for agents</title>
+    <link rel="icon" type="image/png" href="/app-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{.StylePath}}">
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-16MS9N28TE"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-16MS9N28TE');
+    </script>
+  </head>
+  <body>
+    <main class="mx-auto mt-[22vh] max-w-[34rem] px-6 max-sm:mt-[12vh]">
+      <div class="mb-5 flex items-center gap-3">
+        <img class="size-10 object-contain" src="/app-icon.png" alt="">
+        <h1 class="text-xl font-bold tracking-tight">raises</h1>
+      </div>
+      <p class="mb-4 text-[1.35rem] font-medium leading-8 tracking-tight text-ink">Error reporting for agents, not dashboards.</p>
+      <p class="mb-4 text-muted">A Rails exception becomes structured evidence your coding agent can investigate, fix, and acknowledge. Connect GitHub when you want automatic issues.</p>
+      <div class="mt-7 flex items-center gap-4">
+        <a class="inline-flex min-h-11 items-center justify-center rounded-lg bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light" href="/auth/github">Sign in with GitHub</a>
+        <a class="font-semibold text-mint underline underline-offset-4 hover:text-white" href="/llms.txt">Read llms.txt</a>
+      </div>
+      <section class="mt-10">
+        <h2 class="mb-3 text-base font-bold">Point your agent here</h2>
+        <pre class="w-full overflow-auto whitespace-pre-wrap rounded-lg border border-line-strong bg-panel p-4 font-mono text-[13px] leading-6 text-ink" tabindex="0">Set up Raises for this Rails app. Read https://raises.dev/llms.txt and ask me to sign in when authorization is required.</pre>
+      </section>
+      <footer class="mt-10 text-xs text-quiet">
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises">GitHub</a>
+        <span aria-hidden="true">·</span>
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
+      </footer>
+    </main>
+  </body>
+</html>

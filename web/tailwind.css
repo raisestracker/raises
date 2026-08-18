@@ -1,0 +1,42 @@
+@import "tailwindcss" source(none);
+@source "./*.html";
+
+@theme {
+  --font-sans: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: #100c0f;
+  --color-panel: #181216;
+  --color-raised: #21181d;
+  --color-inset: #130e11;
+  --color-ink: #f7edf0;
+  --color-muted: #c1afb5;
+  --color-quiet: #927e85;
+  --color-line: #39262d;
+  --color-line-strong: #57323d;
+  --color-ruby: #dc3f57;
+  --color-ruby-light: #f05a70;
+  --color-ruby-dark: #bd3047;
+  --color-ruby-deep: #2b1119;
+  --color-mint: #71d2bd;
+  --color-mint-dark: #287f6f;
+
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.22), 0 8px 24px rgb(0 0 0 / 0.12);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-screen bg-canvas font-sans text-base leading-6 text-ink antialiased;
+  }
+
+  button,
+  a,
+  input,
+  textarea {
+    @apply focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-mint;
+  }
+}

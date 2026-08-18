@@ -1,0 +1,9 @@
+/data
+/tmp
+/.git
+/.kamal
+/.env
+/node_modules
+*.db
+*.db-wal
+*.db-shm
