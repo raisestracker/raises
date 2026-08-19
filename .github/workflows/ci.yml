@@ -17,28 +17,6 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
 
-  gem:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gem
-    strategy:
-      fail-fast: false
-      matrix:
-        rails: ["~> 7.1.0", "~> 7.2.0", "~> 8.0.0", "~> 8.1.0"]
-    env:
-      BUNDLE_GEMFILE: ${{ github.workspace }}/gem/Gemfile
-      RAILS_VERSION: ${{ matrix.rails }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-          bundler-cache: true
-          working-directory: gem
-      - run: bundle exec rake test
-      - run: gem build raises.gemspec --output /tmp/raises.gem
-
   docker:
     runs-on: ubuntu-latest
     steps:

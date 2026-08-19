@@ -159,7 +159,7 @@ func TestAgentDocumentation(t *testing.T) {
 		want []string
 	}{
 		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry"}},
-		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "controlled production canary", "RAISES_TOKEN"}},
+		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, test.path, nil)
 		rec := httptest.NewRecorder()

@@ -7,6 +7,3 @@
 *.db
 *.db-wal
 *.db-shm
-/gem/pkg/
-/gem/vendor/bundle/
-/gem/Gemfile.lock

@@ -7,7 +7,7 @@ description: Set up Raises or investigate scoped production exceptions and open 
 
 Read https://raises.dev/llms.txt first.
 
-For migrations from Honeybadger, Rollbar, or Sentry, read https://raises.dev/migration.md and follow its parallel-verification sequence before removing the existing provider.
+For migrations from Honeybadger, Rollbar, or Sentry, read https://raises.dev/migration.md. Its parallel-verification canary is an optional elevated-assurance path; use it only when the human requests production verification.
 
 Use `Authorization: Bearer $RAISES_AGENT_TOKEN` for agent endpoints. Keep the token in the user's approved secret manager; never commit or echo it.
 
