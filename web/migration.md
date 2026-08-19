@@ -11,7 +11,6 @@ Raises is an exception inbox, not a replacement for every observability product.
 ## Safety rules
 
 - Inventory the current integration before editing it.
-- Run Raises and the existing provider in parallel until a controlled production canary appears in Raises.
 - Never print, commit, or paste an agent key, ingestion token, provider key, DSN, or access token into a pull request.
 - Store `RAISES_AGENT_TOKEN` in the agent's approved local secret store and `RAISES_TOKEN` in the application's deployment secret manager.
 - Do not delete old provider credentials until the verified Raises deployment is stable and rollback is no longer needed.
@@ -55,9 +54,9 @@ Read [llms.txt](https://raises.dev/llms.txt) for the current API contract.
 
 Agent API requests use `Authorization: Bearer $RAISES_AGENT_TOKEN`. The Rails application uses the separate project-scoped `RAISES_TOKEN` only for notice ingestion.
 
-## 3. Install Raises alongside the existing provider
+## 3. Install Raises
 
-Add Raises without removing the old provider:
+Add Raises as part of the exception-reporting cutover:
 
 ```ruby
 # Gemfile
@@ -113,7 +112,7 @@ Common exception paths are the `honeybadger` gem, `config/honeybadger.yml`, `con
 - Review message-only notifications instead of blindly converting them.
 - Translate error context where it is needed at report time. Re-evaluate global `Honeybadger.context` calls because their lifetime may not match Rails execution context.
 - Keep or separately replace Honeybadger check-ins, uptime monitoring, breadcrumbs, and deploy tracking.
-- After the Raises canary is verified, remove the gem and Honeybadger-only initializer/configuration. Then remove `HONEYBADGER_API_KEY` and other unused Honeybadger secrets from the deployment system.
+- Remove the gem and Honeybadger-only initializer/configuration after the verified Raises deployment. Then remove `HONEYBADGER_API_KEY` and other unused Honeybadger secrets from the deployment system.
 
 ### Rollbar
 
@@ -137,40 +136,9 @@ Common exception paths are `sentry-rails`, `sentry-ruby`, other `sentry-*` gems,
 - If exception reporting is the only Sentry capability in use, remove the Sentry gems and initializer after verification. If other Sentry capabilities remain, disable only duplicate Rails exception capture and retain the required SDK/configuration.
 - Remove `SENTRY_DSN`, auth tokens, and release-upload credentials only when no remaining Sentry feature uses them.
 
-## 6. Verify with a controlled production canary
+## 6. Remove the old exception integration
 
-Run the application tests and security/lint checks first. Deploy Raises while the old provider remains active, then execute one controlled production report through the application's authorized runner or administrative mechanism:
-
-```ruby
-class RaisesMigrationCanary < StandardError; end
-
-begin
-  raise RaisesMigrationCanary, "Raises migration canary"
-rescue RaisesMigrationCanary => error
-  Rails.error.report(
-    error,
-    handled: true,
-    severity: :info,
-    context: { raises_migration_canary: true }
-  )
-end
-```
-
-Do not add a public route that raises an exception. Remove any temporary canary code after use.
-
-Using the agent key, verify the canary with `GET /v1/errors?app=<project-slug>&unacked=1`, then inspect its detail and recent notices. Confirm:
-
-- the class, message, environment, revision, and in-app backtrace are useful;
-- expected safe context arrived and secrets did not;
-- recurrence grouping behaves as expected;
-- the correct GitHub repository received an issue, if repository routing is enabled;
-- a Raises delivery failure cannot replace or interrupt the application error path.
-
-Do not acknowledge the canary until verification is complete.
-
-## 7. Remove the old exception integration
-
-Only after the production canary succeeds:
+After the Raises deployment succeeds:
 
 1. Remove or disable the old provider's automatic Rails exception capture.
 2. Remove translated manual exception calls and provider-only test helpers.
@@ -180,16 +148,15 @@ Only after the production canary succeeds:
 6. Remove unused provider secrets from the deployment secret manager.
 7. Cancel or downgrade the old service only after the human confirms retention/export and rollback needs.
 
-The final pull request should include the migration inventory, test evidence, canary result, retained provider capabilities, secrets that still require human removal, and an explicit rollback path. Do not include credential values or production exception payloads.
+The final pull request should include the migration inventory, test evidence, retained provider capabilities, secrets that still require human removal, and an explicit rollback path. Do not include credential values or production exception payloads.
 
 ## Completion checklist
 
 - [ ] Ruby and Rails versions meet the Raises gem requirements.
 - [ ] Existing exception reporting and adjacent observability features were inventoried.
 - [ ] Raises project, ingestion token, and optional GitHub repository binding are correct.
-- [ ] Raises was deployed in parallel with the existing provider.
+- [ ] Raises was deployed with the configured ingestion token.
 - [ ] Manual exception calls use `Rails.error` and preserve control flow.
-- [ ] A controlled production canary was fetched successfully through the Raises API.
 - [ ] Tests, lint, security, and dependency checks pass.
 - [ ] Old exception capture was removed without deleting retained observability features.
 - [ ] Unused secrets and provider billing remain clearly assigned to the human.
