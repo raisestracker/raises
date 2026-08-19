@@ -15,7 +15,7 @@ Read `https://raises.dev/llms.txt` before setup. Use `Authorization: Bearer $RAI
 2. Exchange the bootstrap credential, store the returned agent key securely, and create a project through the API.
 3. Create a project ingestion token, add `gem "raises"`, and configure `RAISES_TOKEN` in the application secret manager.
 4. If the human installed the optional GitHub App, bind one of the repositories returned by `/v1/github/repositories`.
-5. Trigger a controlled exception and verify it through the scoped errors API.
+5. Only when the human requests elevated production verification, trigger a controlled exception and verify it through the scoped errors API.
 
 Use `Raises.notify("message", level: :info, context: {}, source: nil)` for operational information that must not create an error group or GitHub issue. Query retained notices through `/v1/events`.
 
