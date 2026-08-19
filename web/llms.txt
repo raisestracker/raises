@@ -6,7 +6,7 @@ Raises receives Rails exceptions, groups recurrences, optionally files GitHub is
 
 ## Setup
 
-Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.dev/migration.md before editing the application. Inventory adjacent observability features and verify Raises in parallel before removing the existing provider.
+Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.dev/migration.md before editing the application. Inventory adjacent observability features before removing the existing provider. Parallel verification with a controlled production canary is an optional elevated-assurance path, not the default.
 
 1. Ask the human to sign in at https://raises.dev and create a one-time bootstrap prompt.
 2. Exchange its bootstrap token with `POST https://raises.dev/v1/bootstrap/exchange` and store the returned agent token securely as `RAISES_AGENT_TOKEN`. Never print or commit it.
@@ -14,7 +14,7 @@ Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.d
 4. Create an ingestion credential with `POST /v1/projects/:id/ingestion-tokens`; store it in the Rails application's secret manager as `RAISES_TOKEN`.
 5. Add `gem "raises", "~> 0.3"` and set `RAISES_URL=https://raises.dev`. Optionally set `RAISES_SPOOL_DIR` to private persistent storage for disk-backed delivery retries.
 6. If the human installed the optional GitHub App, list `/v1/github/repositories` and bind the chosen repository to the project.
-7. Send a controlled test exception and verify it through `/v1/errors?app=<project-slug>&unacked=1`.
+7. If the human requests the optional elevated-assurance path, send a controlled production canary and verify it through `/v1/errors?app=<project-slug>&unacked=1`.
 
 All agent API requests except bootstrap exchange and notice ingestion use `Authorization: Bearer $RAISES_AGENT_TOKEN`.
 

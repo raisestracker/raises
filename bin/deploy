@@ -23,7 +23,7 @@ require_command() {
   fi
 }
 
-for command_name in bundle curl git go gofmt kamal npm; do
+for command_name in curl git go gofmt kamal npm; do
   require_command "$command_name"
 done
 
@@ -60,16 +60,6 @@ section "Go dependency and vulnerability checks"
 go mod verify
 go mod tidy -diff
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
-
-section "Ruby gem tests, lint, and dependency audit"
-(
-  cd gem
-  bundle check
-  bundle exec rake test
-  bundle exec rubocop
-  bundle exec bundler-audit check --update
-  gem build raises.gemspec --output /tmp/raises-release-check.gem
-)
 
 if [[ -n "$(git status --porcelain)" ]]; then
   printf 'Checks changed the working tree; review before deploying.\n' >&2

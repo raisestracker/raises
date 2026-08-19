@@ -24,11 +24,11 @@ Health endpoints are `GET /healthz` and `GET /readyz`. Agent and ingestion inter
 gem "raises", "~> 0.3"
 ```
 
-Configure `RAISES_TOKEN` with a project ingestion token and use `RAISES_URL` when the Rails app should report to a self-hosted server. See [gem/README.md](gem/README.md).
+Configure `RAISES_TOKEN` with a project ingestion token and use `RAISES_URL` when the Rails app should report to a self-hosted server. See [raisestracker/raises-rails](https://github.com/raisestracker/raises-rails).
 
 ## Licensing
 
-The Go server and embedded web UI are licensed under [AGPL-3.0-only](LICENSE). Everything in [`gem/`](gem/) remains MIT-licensed under [gem/LICENSE.txt](gem/LICENSE.txt).
+The Go server and embedded web UI are licensed under [AGPL-3.0-only](LICENSE).
 
 ## Contributing
 
