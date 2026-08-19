@@ -2,21 +2,11 @@
 
 [Raises](https://raises.dev) is error reporting for coding agents. Rails exceptions become structured evidence an agent can investigate, fix, and acknowledge. The hosted service supports optional GitHub issue creation and reopening.
 
-Self-hosters can use the small local Docker Compose setup in the [self-hosting guide](docs/self-hosting.md).
+## Get started
 
-## Configuration
+Sign in at [raises.dev](https://raises.dev), create a one-time bootstrap prompt, and follow the agent setup guide at [`/llms.txt`](https://raises.dev/llms.txt). The full agent workflow is documented at [`/skill.md`](https://raises.dev/skill.md).
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_PATH` | SQLite database path |
-| `BASE_URL` | Public server URL |
-| `GITHUB_APP_*` | Optional GitHub App configuration; set all required values together |
-| `WEBHOOK_ENCRYPTION_KEY` | Optional at-rest encryption for outbound webhook secrets |
-| `REPORT_*`, `AWS_REGION` | Optional SES reports and operational alerts |
-| `NTFY_*` | Optional ntfy notifications |
-| `INITIAL_OWNER_GITHUB_ID` | Optional legacy project owner migration |
-
-Health endpoints are `GET /healthz` and `GET /readyz`. Agent and ingestion interfaces are documented in [docs/api.md](docs/api.md). Agent-readable setup is at `/llms.txt`, `/skill.md`, and `/migration.md`.
+Migrating from Honeybadger, Rollbar, or Sentry? Read [`/migration.md`](https://raises.dev/migration.md).
 
 ## Rails gem
 
@@ -24,12 +14,20 @@ Health endpoints are `GET /healthz` and `GET /readyz`. Agent and ingestion inter
 gem "raises", "~> 0.3"
 ```
 
-Configure `RAISES_TOKEN` with a project ingestion token and use `RAISES_URL` when the Rails app should report to a self-hosted server. See [raisestracker/raises-rails](https://github.com/raisestracker/raises-rails).
+Set `RAISES_TOKEN` to a project ingestion token. Use `RAISES_URL` when reporting to a self-hosted server. See [raisestracker/raises-rails](https://github.com/raisestracker/raises-rails).
 
-## Licensing
+## Self-hosting
 
-The Go server and embedded web UI are licensed under [AGPL-3.0-only](LICENSE).
+See the [self-hosting guide](docs/self-hosting.md) for Docker Compose, GitHub App setup, backups, and optional integrations.
+
+## API
+
+See the [API reference](docs/api.md) for agent and ingestion interfaces.
+
+## License
+
+The server is licensed under [AGPL-3.0-only](LICENSE).
 
 ## Contributing
 
-Please open issues and proposals at [raisestracker/raises](https://github.com/raisestracker/raises). See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and proposals are welcome at [raisestracker/raises](https://github.com/raisestracker/raises). See [CONTRIBUTING.md](CONTRIBUTING.md).
