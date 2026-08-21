@@ -72,10 +72,22 @@ func TestProjectsTokensArchivingAndTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestConfiguredOwnerHasUnlimitedActiveProjects(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	owner, _ := store.UpsertGitHubUser(ctx, 3, "owner", "", "")
+	store.ConfigureUnlimitedProjects(owner.ID)
+	for i := 0; i <= MaxActiveProjects; i++ {
+		if _, err := store.CreateProject(ctx, owner.ID, "Project", "owner-project-"+string(rune('a'+i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestArchivedProjectCannotExceedActiveLimitWhenRestored(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := context.Background()
-	user, _ := store.UpsertGitHubUser(ctx, 3, "limit", "", "")
+	user, _ := store.UpsertGitHubUser(ctx, 4, "limit", "", "")
 	archived, err := store.CreateProject(ctx, user.ID, "Archived", "archived")
 	if err != nil {
 		t.Fatal(err)

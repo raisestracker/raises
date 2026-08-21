@@ -98,17 +98,18 @@ type IssueFiler interface {
 }
 
 type Store struct {
-	db                  *sql.DB
-	now                 func() time.Time
-	filer               IssueFiler
-	keepNotices         int
-	jobNotify           chan struct{}
-	outboundNotify      chan struct{}
-	issueJobDead        func(IssueDelivery)
-	outboundDead        func(OutboundDelivery)
-	secretCipher        SecretCipher
-	operatorNtfyOwnerID int64
-	operatorNtfyEnabled bool
+	db                       *sql.DB
+	now                      func() time.Time
+	filer                    IssueFiler
+	keepNotices              int
+	jobNotify                chan struct{}
+	outboundNotify           chan struct{}
+	issueJobDead             func(IssueDelivery)
+	outboundDead             func(OutboundDelivery)
+	secretCipher             SecretCipher
+	operatorNtfyOwnerID      int64
+	operatorNtfyEnabled      bool
+	unlimitedProjectsOwnerID int64
 }
 
 func (s *Store) OnIssueJobDead(handler func(IssueDelivery)) {

@@ -111,6 +111,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	store.ConfigureUnlimitedProjects(legacyOwnerID)
 	for _, app := range conf.apps {
 		if err := store.UpsertApp(ctx, app.name, app.token, app.repo); err != nil {
 			return err

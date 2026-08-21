@@ -581,6 +581,14 @@ func (s *Store) GetProject(ctx context.Context, userID int64, id string) (Projec
 	return p, err
 }
 
+func (s *Store) ConfigureUnlimitedProjects(ownerUserID int64) {
+	s.unlimitedProjectsOwnerID = ownerUserID
+}
+
+func (s *Store) projectLimitReached(userID int64, count int) bool {
+	return userID != s.unlimitedProjectsOwnerID && count >= MaxActiveProjects
+}
+
 func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug string) (Project, error) {
 	name = strings.TrimSpace(name)
 	slug = strings.ToLower(strings.TrimSpace(slug))
@@ -591,7 +599,7 @@ func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug stri
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
 		return Project{}, err
 	}
-	if count >= MaxActiveProjects {
+	if s.projectLimitReached(userID, count) {
 		return Project{}, fmt.Errorf("project limit reached")
 	}
 	id, err := randomID("prj_", 12)
@@ -633,7 +641,7 @@ func (s *Store) SetProjectArchived(ctx context.Context, userID int64, id string,
 		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
 			return Project{}, err
 		}
-		if count >= MaxActiveProjects {
+		if s.projectLimitReached(userID, count) {
 			return Project{}, fmt.Errorf("project limit reached")
 		}
 	}
