@@ -27,6 +27,6 @@ Do not merge, close issues, expose credentials, or make production changes witho
 
 ## Informational notices
 
-Use `Raises.notify("message", level: :info, context: {}, source: nil)` when the application should report an operational event without creating an exception or GitHub issue. Query these events with `GET /v1/events?project=<project-slug>&level=info` and fetch one with `GET /v1/events/:id`.
+Use `Raises.notify("message", level: :info, context: {}, source: nil)` in Rails or `client.Notify(ctx, "message", raises.Event{Level: raises.Info})` in Go when the application should report an operational event without creating an exception or GitHub issue. Query these events with `GET /v1/events?project=<project-slug>&level=info` and fetch one with `GET /v1/events/:id`.
 
 Manage account-scoped outbound destinations with `/v1/webhook-endpoints`. A create or secret-rotation response shows its signing secret once. Store that value in the user's approved secret manager and never print or commit it. Use the test route before relying on a destination, inspect `/v1/webhook-deliveries`, and retry only dead deliveries. The full signing contract is at https://github.com/raisestracker/raises/blob/master/docs/api.md.

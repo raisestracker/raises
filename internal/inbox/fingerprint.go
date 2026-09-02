@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var fileLine = regexp.MustCompile(`([^:\s]+\.rb):(\d+)`)
+var fileLine = regexp.MustCompile(`([^:\s]+\.[[:alnum:]]+):(\d+)`)
 
 func Fingerprint(class string, backtrace []string, context map[string]any) (fingerprint, location string) {
 	location = firstInApp(backtrace)

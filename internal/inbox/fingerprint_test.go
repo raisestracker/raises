@@ -19,6 +19,19 @@ func TestFingerprintUsesInAppFrame(t *testing.T) {
 	}
 }
 
+func TestFingerprintUsesGoApplicationFrame(t *testing.T) {
+	fp, loc := Fingerprint("*errors.errorString", []string{
+		"net/http/server.go:3340 in net/http.(*conn).serve",
+		"app/internal/jobs/worker.go:42 in example.com/widget/internal/jobs.Run",
+	}, nil)
+	if loc != "app/internal/jobs/worker.go:42" {
+		t.Fatalf("location = %q", loc)
+	}
+	if fp == "" {
+		t.Fatal("expected fingerprint")
+	}
+}
+
 func TestFingerprintIgnoresMessage(t *testing.T) {
 	bt := []string{"app/jobs/foo.rb:3:in `perform`"}
 	a, _ := Fingerprint("RuntimeError", bt, nil)

@@ -2,7 +2,7 @@
 
 > Error reporting for coding agents, not dashboards.
 
-Raises receives Rails exceptions, groups recurrences, optionally files GitHub issues, and exposes the evidence to an authenticated coding agent.
+Raises receives application exceptions, groups recurrences, optionally files GitHub issues, and exposes the evidence to an authenticated coding agent. Official clients support Rails and Go.
 
 ## Setup
 
@@ -11,10 +11,13 @@ Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.d
 1. Ask the human to sign in at https://raises.dev and create a one-time bootstrap prompt.
 2. Exchange its bootstrap token with `POST https://raises.dev/v1/bootstrap/exchange` and store the returned agent token securely as `RAISES_AGENT_TOKEN`. Never print or commit it.
 3. Create a project with `POST /v1/projects`.
-4. Create an ingestion credential with `POST /v1/projects/:id/ingestion-tokens`; store it in the Rails application's secret manager as `RAISES_TOKEN`.
-5. Add `gem "raises", "~> 0.3"` and set `RAISES_URL=https://raises.dev`. Optionally set `RAISES_SPOOL_DIR` to private persistent storage for disk-backed delivery retries.
-6. If the human installed the optional GitHub App, list `/v1/github/repositories` and bind the chosen repository to the project.
-7. If the human requests the optional elevated-assurance path, send a controlled production canary and verify it through `/v1/errors?app=<project-slug>&unacked=1`.
+4. Create an ingestion credential with `POST /v1/projects/:id/ingestion-tokens`; store it in the application's secret manager as `RAISES_TOKEN`.
+5. Install the client for the application:
+   - Rails 7.1+: add `gem "raises", "~> 0.3"`. Optionally set `RAISES_SPOOL_DIR` to private persistent storage for disk-backed delivery retries.
+   - Go 1.22+: run `go get github.com/raisestracker/raises-go@v0.1.0`, report returned errors explicitly, and add panic recovery at process, goroutine, or `net/http` boundaries.
+6. Set `RAISES_URL=https://raises.dev` only when overriding the client's default.
+7. If the human installed the optional GitHub App, list `/v1/github/repositories` and bind the chosen repository to the project.
+8. If the human requests the optional elevated-assurance path, send a controlled production canary and verify it through `/v1/errors?app=<project-slug>&unacked=1`.
 
 All agent API requests except bootstrap exchange and notice ingestion use `Authorization: Bearer $RAISES_AGENT_TOKEN`.
 
@@ -29,6 +32,6 @@ Migration guide: https://raises.dev/migration.md
 
 ## Informational notices and webhooks
 
-Use `Raises.notify("message", level: :info, context: {}, source: nil)` for an operational event that is not an exception. Valid levels are `info`, `warning`, and `error`. These notices are retained for 30 days, available at `GET /v1/events`, and delivered to configured integrations. They never create error groups or GitHub issues.
+Use `Raises.notify("message", level: :info, context: {}, source: nil)` in Rails or `client.Notify(ctx, "message", raises.Event{Level: raises.Info})` in Go for an operational event that is not an exception. Valid levels are `info`, `warning`, and `error`. These notices are retained for 30 days, available at `GET /v1/events`, and delivered to configured integrations. They never create error groups or GitHub issues.
 
 Agents can create up to three account-scoped outbound webhook endpoints through `/v1/webhook-endpoints`. Raises signs each delivery and retries transient failures. See https://raises.dev/skill.md and https://github.com/raisestracker/raises/blob/master/docs/api.md for the exact contract.

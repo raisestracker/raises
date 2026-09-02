@@ -37,7 +37,24 @@ The repository must belong to a GitHub App installation connected by the signed-
 
 ## Exceptions
 
-- `POST /v1/notices` using a project ingestion token
+`POST /v1/notices` uses a project ingestion token:
+
+```json
+{
+  "env": "production",
+  "revision": "abc123",
+  "handled": true,
+  "error": {
+    "class": "*errors.errorString",
+    "message": "import failed",
+    "backtrace": ["app/internal/importer/run.go:42 in example.com/widget/internal/importer.Run"]
+  },
+  "context": {"import_id": 7}
+}
+```
+
+Backtrace entries beginning with `app/` identify application frames for grouping. Raises groups notices by error class and the first application frame.
+
 - `GET /v1/errors?app=widget&unacked=1`
 - `GET /v1/errors/:id`
 - `GET /v1/errors/:id/notices?limit=5`

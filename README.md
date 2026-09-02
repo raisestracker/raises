@@ -1,6 +1,6 @@
 # Raises
 
-[Raises](https://raises.dev) is error reporting for coding agents. Rails exceptions become structured evidence an agent can investigate, fix, and acknowledge. The hosted service supports optional GitHub issue creation and reopening.
+[Raises](https://raises.dev) is error reporting for coding agents. Application exceptions become structured evidence an agent can investigate, fix, and acknowledge. Official clients support Rails and Go. The hosted service supports optional GitHub issue creation and reopening.
 
 ## Get started
 
@@ -15,6 +15,14 @@ gem "raises", "~> 0.3"
 ```
 
 Set `RAISES_TOKEN` to a project ingestion token. Use `RAISES_URL` when reporting to a self-hosted server. See [raisestracker/raises-rails](https://github.com/raisestracker/raises-rails).
+
+## Go module
+
+```sh
+go get github.com/raisestracker/raises-go@v0.1.0
+```
+
+Set `RAISES_TOKEN` to a project ingestion token. The client reports returned errors explicitly and captures panics at process, goroutine, or `net/http` boundaries. See [raisestracker/raises-go](https://github.com/raisestracker/raises-go).
 
 ## Self-hosting
 
