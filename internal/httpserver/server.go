@@ -64,9 +64,9 @@ type Store interface {
 	CreateEvent(context.Context, string, inbox.EventInput) (inbox.Event, error)
 	ListEventsForUser(context.Context, int64, string, string, time.Time, int) ([]inbox.Event, error)
 	GetEventForUser(context.Context, int64, string) (inbox.Event, error)
-	CreateWebhookEndpoint(context.Context, int64, string, []string) (inbox.WebhookEndpoint, string, error)
+	CreateWebhookEndpoint(context.Context, int64, string, []string, inbox.WebhookAuthorization) (inbox.WebhookEndpoint, string, error)
 	ListWebhookEndpoints(context.Context, int64) ([]inbox.WebhookEndpoint, error)
-	UpdateWebhookEndpoint(context.Context, int64, string, string, []string, bool) (inbox.WebhookEndpoint, error)
+	UpdateWebhookEndpoint(context.Context, int64, string, string, []string, bool, *inbox.WebhookAuthorization) (inbox.WebhookEndpoint, error)
 	DeleteWebhookEndpoint(context.Context, int64, string) error
 	RotateWebhookSecret(context.Context, int64, string) (string, error)
 	EnqueueWebhookTest(context.Context, int64, string) error

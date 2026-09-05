@@ -12,7 +12,7 @@ import (
 
 const (
 	MaxEventsPerAccount           = 10_000
-	MaxWebhookEndpointsPerAccount = 3
+	MaxWebhookEndpointsPerAccount = 20
 	eventRetention                = 30 * 24 * time.Hour
 )
 
@@ -46,13 +46,19 @@ type Event struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+type WebhookAuthorization struct {
+	Header string
+	Value  string
+}
+
 type WebhookEndpoint struct {
-	ID        string    `json:"id"`
-	URL       string    `json:"url"`
-	Events    []string  `json:"events"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                  string    `json:"id"`
+	URL                 string    `json:"url"`
+	Events              []string  `json:"events"`
+	Active              bool      `json:"active"`
+	AuthorizationHeader string    `json:"authorization_header,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type OutboundEvent struct {
@@ -67,15 +73,17 @@ type OutboundEvent struct {
 }
 
 type OutboundDelivery struct {
-	ID              string
-	Event           OutboundEvent
-	DestinationKind string
-	EndpointID      string
-	URL             string
-	SigningSecret   string
-	Attempts        int
-	LastError       string
-	Group           *Group
+	ID                  string
+	Event               OutboundEvent
+	DestinationKind     string
+	EndpointID          string
+	URL                 string
+	SigningSecret       string
+	AuthorizationHeader string
+	AuthorizationValue  string
+	Attempts            int
+	LastError           string
+	Group               *Group
 }
 
 type WebhookDelivery struct {
@@ -112,6 +120,7 @@ func (s *Store) initializeEvents(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS webhook_endpoints (
 			id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, url_encrypted TEXT NOT NULL,
 			signing_secret_encrypted TEXT NOT NULL, events_json TEXT NOT NULL,
+			authorization_header TEXT NOT NULL DEFAULT '', authorization_value_encrypted TEXT NOT NULL DEFAULT '',
 			active INTEGER NOT NULL DEFAULT 1, created_at_unix INTEGER NOT NULL, updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_owner ON webhook_endpoints(owner_user_id, active)`,
@@ -133,6 +142,21 @@ func (s *Store) initializeEvents(ctx context.Context) error {
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize events: %w", err)
+		}
+	}
+	columns := map[string]string{
+		"authorization_header":          "ALTER TABLE webhook_endpoints ADD COLUMN authorization_header TEXT NOT NULL DEFAULT ''",
+		"authorization_value_encrypted": "ALTER TABLE webhook_endpoints ADD COLUMN authorization_value_encrypted TEXT NOT NULL DEFAULT ''",
+	}
+	for column, statement := range columns {
+		exists, err := s.columnExists(ctx, "webhook_endpoints", column)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("add webhook_endpoints.%s: %w", column, err)
+			}
 		}
 	}
 	return nil
@@ -288,11 +312,53 @@ func validWebhookEvents(events []string) ([]string, error) {
 	return clean, nil
 }
 
-func (s *Store) CreateWebhookEndpoint(ctx context.Context, userID int64, url string, events []string) (WebhookEndpoint, string, error) {
+func ValidateWebhookAuthorization(authorization WebhookAuthorization) (WebhookAuthorization, error) {
+	authorization.Header = strings.TrimSpace(authorization.Header)
+	if authorization.Header == "" && authorization.Value == "" {
+		return authorization, nil
+	}
+	if authorization.Header == "" || authorization.Value == "" {
+		return WebhookAuthorization{}, fmt.Errorf("authorization header and value are required together")
+	}
+	if len(authorization.Header) > 100 {
+		return WebhookAuthorization{}, fmt.Errorf("authorization header is too long")
+	}
+	if len(authorization.Value) > 4096 {
+		return WebhookAuthorization{}, fmt.Errorf("authorization value is too long")
+	}
+	for index := 0; index < len(authorization.Header); index++ {
+		character := authorization.Header[index]
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(character))) {
+			return WebhookAuthorization{}, fmt.Errorf("authorization header is invalid")
+		}
+	}
+	for index := 0; index < len(authorization.Value); index++ {
+		character := authorization.Value[index]
+		if (character < 0x20 && character != '\t') || character == 0x7f {
+			return WebhookAuthorization{}, fmt.Errorf("authorization value is invalid")
+		}
+	}
+	lowerHeader := strings.ToLower(authorization.Header)
+	reserved := map[string]bool{
+		"connection": true, "content-length": true, "content-type": true, "host": true,
+		"proxy-authorization": true, "te": true, "trailer": true, "transfer-encoding": true,
+		"upgrade": true, "user-agent": true,
+	}
+	if reserved[lowerHeader] || strings.HasPrefix(lowerHeader, "x-raises-") {
+		return WebhookAuthorization{}, fmt.Errorf("authorization header is invalid because Raises controls it")
+	}
+	return authorization, nil
+}
+
+func (s *Store) CreateWebhookEndpoint(ctx context.Context, userID int64, url string, events []string, authorization WebhookAuthorization) (WebhookEndpoint, string, error) {
 	if s.secretCipher == nil {
 		return WebhookEndpoint{}, "", fmt.Errorf("webhook encryption is unavailable")
 	}
 	events, err := validWebhookEvents(events)
+	if err != nil {
+		return WebhookEndpoint{}, "", err
+	}
+	authorization, err = ValidateWebhookAuthorization(authorization)
 	if err != nil {
 		return WebhookEndpoint{}, "", err
 	}
@@ -324,19 +390,26 @@ func (s *Store) CreateWebhookEndpoint(ctx context.Context, userID int64, url str
 	if err != nil {
 		return WebhookEndpoint{}, "", err
 	}
+	encryptedAuthorizationValue := ""
+	if authorization.Value != "" {
+		encryptedAuthorizationValue, err = s.secretCipher.Encrypt(authorization.Value)
+		if err != nil {
+			return WebhookEndpoint{}, "", err
+		}
+	}
 	eventsJSON, _ := json.Marshal(events)
 	now := s.now().UTC()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO webhook_endpoints(id,owner_user_id,url_encrypted,signing_secret_encrypted,events_json,active,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,1,?,?)`, id, userID, encryptedURL, encryptedSecret, string(eventsJSON), now.Unix(), now.Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO webhook_endpoints(id,owner_user_id,url_encrypted,signing_secret_encrypted,events_json,authorization_header,authorization_value_encrypted,active,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,1,?,?)`, id, userID, encryptedURL, encryptedSecret, string(eventsJSON), authorization.Header, encryptedAuthorizationValue, now.Unix(), now.Unix()); err != nil {
 		return WebhookEndpoint{}, "", err
 	}
 	if err := tx.Commit(); err != nil {
 		return WebhookEndpoint{}, "", err
 	}
-	return WebhookEndpoint{ID: id, URL: url, Events: events, Active: true, CreatedAt: now, UpdatedAt: now}, secret, nil
+	return WebhookEndpoint{ID: id, URL: url, Events: events, Active: true, AuthorizationHeader: authorization.Header, CreatedAt: now, UpdatedAt: now}, secret, nil
 }
 
 func (s *Store) ListWebhookEndpoints(ctx context.Context, userID int64) ([]WebhookEndpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,url_encrypted,events_json,active,created_at_unix,updated_at_unix FROM webhook_endpoints WHERE owner_user_id=? ORDER BY created_at_unix`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,url_encrypted,events_json,authorization_header,active,created_at_unix,updated_at_unix FROM webhook_endpoints WHERE owner_user_id=? ORDER BY created_at_unix`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +425,7 @@ func (s *Store) ListWebhookEndpoints(ctx context.Context, userID int64) ([]Webho
 	return endpoints, rows.Err()
 }
 
-func (s *Store) UpdateWebhookEndpoint(ctx context.Context, userID int64, id, url string, events []string, active bool) (WebhookEndpoint, error) {
+func (s *Store) UpdateWebhookEndpoint(ctx context.Context, userID int64, id, url string, events []string, active bool, authorization *WebhookAuthorization) (WebhookEndpoint, error) {
 	if s.secretCipher == nil {
 		return WebhookEndpoint{}, fmt.Errorf("webhook encryption is unavailable")
 	}
@@ -365,7 +438,23 @@ func (s *Store) UpdateWebhookEndpoint(ctx context.Context, userID int64, id, url
 		return WebhookEndpoint{}, err
 	}
 	eventsJSON, _ := json.Marshal(events)
-	result, err := s.db.ExecContext(ctx, `UPDATE webhook_endpoints SET url_encrypted=?,events_json=?,active=?,updated_at_unix=? WHERE owner_user_id=? AND id=?`, encryptedURL, string(eventsJSON), boolToInt(active), s.now().UTC().Unix(), userID, id)
+	var result sql.Result
+	if authorization == nil {
+		result, err = s.db.ExecContext(ctx, `UPDATE webhook_endpoints SET url_encrypted=?,events_json=?,active=?,updated_at_unix=? WHERE owner_user_id=? AND id=?`, encryptedURL, string(eventsJSON), boolToInt(active), s.now().UTC().Unix(), userID, id)
+	} else {
+		validated, validationErr := ValidateWebhookAuthorization(*authorization)
+		if validationErr != nil {
+			return WebhookEndpoint{}, validationErr
+		}
+		encryptedAuthorizationValue := ""
+		if validated.Value != "" {
+			encryptedAuthorizationValue, err = s.secretCipher.Encrypt(validated.Value)
+			if err != nil {
+				return WebhookEndpoint{}, err
+			}
+		}
+		result, err = s.db.ExecContext(ctx, `UPDATE webhook_endpoints SET url_encrypted=?,events_json=?,authorization_header=?,authorization_value_encrypted=?,active=?,updated_at_unix=? WHERE owner_user_id=? AND id=?`, encryptedURL, string(eventsJSON), validated.Header, encryptedAuthorizationValue, boolToInt(active), s.now().UTC().Unix(), userID, id)
+	}
 	if err != nil {
 		return WebhookEndpoint{}, err
 	}
@@ -409,7 +498,7 @@ func (s *Store) RotateWebhookSecret(ctx context.Context, userID int64, id string
 }
 
 func (s *Store) webhookEndpointForUser(ctx context.Context, userID int64, id string) (WebhookEndpoint, error) {
-	endpoint, err := s.scanWebhookEndpoint(s.db.QueryRowContext(ctx, `SELECT id,url_encrypted,events_json,active,created_at_unix,updated_at_unix FROM webhook_endpoints WHERE owner_user_id=? AND id=?`, userID, id))
+	endpoint, err := s.scanWebhookEndpoint(s.db.QueryRowContext(ctx, `SELECT id,url_encrypted,events_json,authorization_header,active,created_at_unix,updated_at_unix FROM webhook_endpoints WHERE owner_user_id=? AND id=?`, userID, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return WebhookEndpoint{}, ErrNotFound
 	}
@@ -421,7 +510,7 @@ func (s *Store) scanWebhookEndpoint(row rowScanner) (WebhookEndpoint, error) {
 	var encryptedURL, eventsJSON string
 	var active int
 	var created, updated int64
-	if err := row.Scan(&endpoint.ID, &encryptedURL, &eventsJSON, &active, &created, &updated); err != nil {
+	if err := row.Scan(&endpoint.ID, &encryptedURL, &eventsJSON, &endpoint.AuthorizationHeader, &active, &created, &updated); err != nil {
 		return WebhookEndpoint{}, err
 	}
 	if s.secretCipher == nil {

@@ -266,7 +266,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, _, err := store.CreateSession(context.Background(), user.ID, time.Hour)
+	token, session, err := store.CreateSession(context.Background(), user.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -288,6 +288,23 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "G-16MS9N28TE") {
 		t.Fatal("authenticated settings should not contain Google tag")
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=Codex"))
+	create.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	create.Header.Set("Accept", "application/json")
+	create.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, create)
+	if createRec.Code != http.StatusCreated || !strings.Contains(createRec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("create key=%d content-type=%q body=%s", createRec.Code, createRec.Header().Get("Content-Type"), createRec.Body.String())
+	}
+	var created struct {
+		Token string         `json:"token"`
+		Key   inbox.AgentKey `json:"key"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil || created.Token == "" || created.Key.Name != "Codex" {
+		t.Fatalf("created=%#v err=%v body=%s", created, err, createRec.Body.String())
 	}
 }
 
@@ -338,7 +355,7 @@ func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail=%d %s", detailRec.Code, detailRec.Body.String())
 	}
-	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", `href="/settings" aria-label="Raises dashboard"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(detailRec.Body.String(), want) {
 			t.Fatalf("detail missing %q", want)
 		}
@@ -385,12 +402,20 @@ func TestEventAndWebhookAgentAPI(t *testing.T) {
 		t.Fatalf("list=%d %s", listRec.Code, listRec.Body.String())
 	}
 
-	endpoint := httptest.NewRequest(http.MethodPost, "/v1/webhook-endpoints", bytes.NewBufferString(`{"url":"https://example.com/raises","events":["notice.created"]}`))
+	endpoint := httptest.NewRequest(http.MethodPost, "/v1/webhook-endpoints", bytes.NewBufferString(`{"url":"https://example.com/raises","events":["notice.created"],"authorization_header":"Authorization","authorization_value":"Bearer destination-secret"}`))
 	endpoint.Header.Set("Authorization", "Bearer "+agentToken)
 	endpointRec := httptest.NewRecorder()
 	handler.ServeHTTP(endpointRec, endpoint)
-	if endpointRec.Code != http.StatusCreated || !strings.Contains(endpointRec.Body.String(), `"signing_secret":"whsec_`) {
+	if endpointRec.Code != http.StatusCreated || !strings.Contains(endpointRec.Body.String(), `"signing_secret":"whsec_`) || !strings.Contains(endpointRec.Body.String(), `"authorization_header":"Authorization"`) || strings.Contains(endpointRec.Body.String(), "destination-secret") {
 		t.Fatalf("endpoint=%d %s", endpointRec.Code, endpointRec.Body.String())
+	}
+
+	incompleteAuthorization := httptest.NewRequest(http.MethodPost, "/v1/webhook-endpoints", bytes.NewBufferString(`{"url":"https://example.com/raises","authorization_header":"Authorization"}`))
+	incompleteAuthorization.Header.Set("Authorization", "Bearer "+agentToken)
+	incompleteAuthorizationRec := httptest.NewRecorder()
+	handler.ServeHTTP(incompleteAuthorizationRec, incompleteAuthorization)
+	if incompleteAuthorizationRec.Code != http.StatusBadRequest {
+		t.Fatalf("incomplete authorization=%d %s", incompleteAuthorizationRec.Code, incompleteAuthorizationRec.Body.String())
 	}
 
 	bad := httptest.NewRequest(http.MethodPost, "/v1/webhook-endpoints", bytes.NewBufferString(`{"url":"http://127.0.0.1/hook"}`))

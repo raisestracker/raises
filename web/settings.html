@@ -13,7 +13,7 @@
   <body>
     <main class="mx-auto mb-16 mt-8 w-full max-w-6xl px-6 max-sm:mt-4 max-sm:px-4">
       <header class="flex items-center justify-between gap-6 border-b border-line pb-6 max-sm:items-start">
-        <a class="flex items-center gap-3 text-xl font-bold tracking-tight text-ink no-underline" href="/" aria-label="Raises home">
+        <a class="flex items-center gap-3 text-xl font-bold tracking-tight text-ink no-underline" href="/settings" aria-label="Raises dashboard">
           <img class="size-8 object-contain" src="/app-icon.png" alt="">
           <span>raises</span>
         </a>
@@ -83,23 +83,28 @@
           <p class="text-[15px] leading-6 text-muted">Keys work across every project in this account. New keys are shown once.</p>
         </header>
         <div class="min-w-0">
-          {{if .NewAgentToken}}
-          <div class="mb-6">
+          <div class="mb-6" id="new-agent-key" {{if not .NewAgentToken}}hidden{{end}}>
             <p class="mb-2 text-sm font-semibold text-ink">Store this key now. It will not be shown again.</p>
-            <textarea class="w-full overflow-auto whitespace-pre-wrap rounded-lg border border-line-strong bg-inset p-4 font-mono text-[13px] leading-6 text-ink" aria-label="New agent API key" readonly rows="3">{{.NewAgentToken}}</textarea>
+            <div class="relative">
+              <textarea class="w-full overflow-auto whitespace-pre-wrap rounded-lg border border-line-strong bg-inset p-4 pr-14 font-mono text-[13px] leading-6 text-ink" id="new-agent-token" aria-label="New agent API key" readonly rows="3">{{.NewAgentToken}}</textarea>
+              <button class="absolute right-3 top-3 inline-flex size-9 cursor-pointer items-center justify-center rounded-md border border-line-strong bg-raised text-muted transition-colors hover:border-ruby-light hover:text-white" id="copy-agent-key" type="button" aria-label="Copy agent key" title="Copy agent key">
+                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75A1.125 1.125 0 0 1 3.75 20.625v-9.75c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V4.108c0-.298-.119-.585-.33-.796l-2.232-2.232a1.125 1.125 0 0 0-.795-.33h-5.018c-.621 0-1.125.504-1.125 1.125v3.375m5 12h-6.375A1.125 1.125 0 0 1 8.25 16.125v-9.75c0-.621.504-1.125 1.125-1.125h4.007c.298 0 .585.119.796.33l2.892 2.892c.211.211.33.498.33.796v6.857c0 .621-.504 1.125-1.125 1.125Z" /></svg>
+              </button>
+            </div>
+            <p class="mt-2 min-h-5 text-[13px] text-mint" id="copy-agent-key-status" role="status" aria-live="polite"></p>
           </div>
-          {{end}}
-          <form method="post" action="/settings/agent-keys">
+          <form method="post" action="/settings/agent-keys" id="agent-key-form">
             <input type="hidden" name="csrf" value="{{.CSRF}}">
             <label class="mb-2 block text-sm font-semibold text-ink" for="agent-name">Name this agent</label>
             <div class="flex items-stretch gap-3 max-sm:flex-col">
               <input class="min-w-0 flex-1 rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 text-ink placeholder:text-quiet" id="agent-name" name="name" placeholder="e.g. Codex on my Mac" maxlength="80" required>
-              <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light max-sm:w-full" type="submit">Create key</button>
+              <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light disabled:cursor-wait disabled:opacity-60 max-sm:w-full" type="submit">Create key</button>
             </div>
+            <p class="mt-2 min-h-5 text-[13px] text-ruby-light" id="agent-key-form-status" role="status" aria-live="polite"></p>
           </form>
-          <ul class="mt-6 list-none p-0">
+          <ul class="mt-6 list-none p-0" id="agent-key-list">
             {{range .Keys}}
-            <li class="flex items-center justify-between gap-6 border-t border-line py-4 max-sm:flex-col max-sm:items-start max-sm:gap-3">
+            <li class="flex items-center justify-between gap-6 border-t border-line py-4 max-sm:flex-col max-sm:items-start max-sm:gap-3" data-agent-key>
               <div class="min-w-0">
                 <h3 class="break-words text-base font-bold leading-6">{{.Name}}</h3>
                 <p class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[13px] leading-5 text-quiet"><code class="font-mono text-muted">raises_agent_{{.Prefix}}…</code><span>Created {{.CreatedAt.Format "2006-01-02"}}</span>{{if .LastUsedAt}}<span>Last used {{.LastUsedAt.Format "2006-01-02"}}</span>{{end}}{{if .RevokedAt}}<span>Revoked</span>{{end}}</p>
@@ -112,9 +117,21 @@
               {{end}}
             </li>
             {{else}}
-            <li class="border-t border-line py-4 text-sm leading-6 text-quiet">No agent keys yet. Create one for an agent that cannot use the bootstrap flow.</li>
+            <li class="border-t border-line py-4 text-sm leading-6 text-quiet" id="no-agent-keys">No agent keys yet. Create one for an agent that cannot use the bootstrap flow.</li>
             {{end}}
           </ul>
+          <template id="agent-key-row-template">
+            <li class="flex items-center justify-between gap-6 border-t border-line py-4 max-sm:flex-col max-sm:items-start max-sm:gap-3" data-agent-key>
+              <div class="min-w-0">
+                <h3 class="break-words text-base font-bold leading-6" data-key-name></h3>
+                <p class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[13px] leading-5 text-quiet"><code class="font-mono text-muted" data-key-prefix></code><span data-key-created></span></p>
+              </div>
+              <form method="post" data-key-revoke>
+                <input type="hidden" name="csrf" value="{{.CSRF}}">
+                <button class="cursor-pointer border-0 bg-transparent p-1 text-sm font-semibold text-ruby-light hover:text-white" type="submit">Revoke key</button>
+              </form>
+            </li>
+          </template>
         </div>
       </section>
 
@@ -223,5 +240,68 @@
         <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
       </footer>
     </main>
+    <script>
+      (() => {
+        const form = document.getElementById("agent-key-form");
+        const panel = document.getElementById("new-agent-key");
+        const token = document.getElementById("new-agent-token");
+        const copyButton = document.getElementById("copy-agent-key");
+        const copyStatus = document.getElementById("copy-agent-key-status");
+        const formStatus = document.getElementById("agent-key-form-status");
+        const list = document.getElementById("agent-key-list");
+        const rowTemplate = document.getElementById("agent-key-row-template");
+
+        copyButton.addEventListener("click", async () => {
+          if (!token.value) return;
+          try {
+            if (navigator.clipboard && window.isSecureContext) {
+              await navigator.clipboard.writeText(token.value);
+            } else {
+              token.select();
+              document.execCommand("copy");
+            }
+            copyStatus.textContent = "Copied to clipboard";
+          } catch (_) {
+            token.focus();
+            token.select();
+            copyStatus.textContent = "Key selected. Press Ctrl+C or Command+C to copy.";
+          }
+        });
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const submit = form.querySelector('button[type="submit"]');
+          submit.disabled = true;
+          formStatus.textContent = "";
+          copyStatus.textContent = "";
+          try {
+            const response = await fetch(form.action, {
+              method: "POST",
+              body: new FormData(form),
+              headers: { Accept: "application/json" }
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Could not create key");
+
+            token.value = payload.token;
+            panel.hidden = false;
+            form.reset();
+
+            const row = rowTemplate.content.firstElementChild.cloneNode(true);
+            row.querySelector("[data-key-name]").textContent = payload.key.name;
+            row.querySelector("[data-key-prefix]").textContent = `raises_agent_${payload.key.prefix}…`;
+            row.querySelector("[data-key-created]").textContent = `Created ${payload.key.created_at.slice(0, 10)}`;
+            row.querySelector("[data-key-revoke]").action = `/settings/agent-keys/${encodeURIComponent(payload.key.id)}/revoke`;
+            document.getElementById("no-agent-keys")?.remove();
+            list.prepend(row);
+            token.focus();
+          } catch (error) {
+            formStatus.textContent = error.message || "Could not create key";
+          } finally {
+            submit.disabled = false;
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

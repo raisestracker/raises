@@ -297,9 +297,13 @@ func (s *Server) createBrowserAgentKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", 400)
 		return
 	}
-	token, _, err := s.store.CreateAgentKey(r.Context(), session.User.ID, r.FormValue("name"))
+	token, key, err := s.store.CreateAgentKey(r.Context(), session.User.ID, r.FormValue("name"))
 	if err != nil {
 		s.writeStoreError(w, err)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, http.StatusCreated, map[string]any{"token": token, "key": key})
 		return
 	}
 	s.renderSettingsRequest(w, r, session, "", token)

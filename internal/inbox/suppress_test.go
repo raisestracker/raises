@@ -17,7 +17,7 @@ func TestSuppressRetainsEvidenceAndSkipsSideEffects(t *testing.T) {
 	if err := store.AssignLegacyProjects(ctx, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"error.created", "error.regressed"})
+	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"error.created", "error.regressed"}, WebhookAuthorization{})
 	store.ConfigureOperatorNtfy(user.ID, true)
 
 	n := Notice{
@@ -92,7 +92,7 @@ func TestUnsuppressRestoresFutureBehaviorOnly(t *testing.T) {
 	if err := store.AssignLegacyProjects(ctx, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"error.regressed"})
+	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"error.regressed"}, WebhookAuthorization{})
 
 	n := Notice{
 		Env:       "production",

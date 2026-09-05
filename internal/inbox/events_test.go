@@ -2,6 +2,7 @@ package inbox
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestEventEnqueuesWebhookAndOperatorNtfy(t *testing.T) {
 	user, _ := store.UpsertGitHubUser(ctx, 12, "owner", "", "")
 	project, _ := store.CreateProject(ctx, user.ID, "Widget", "widget")
 	token, _, _ := store.CreateProjectToken(ctx, user.ID, project.ID)
-	endpoint, secret, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"notice.created"})
+	endpoint, secret, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"notice.created"}, WebhookAuthorization{Header: "Authorization", Value: "Bearer destination-secret"})
 	if err != nil || secret == "" {
 		t.Fatalf("endpoint=%#v secret=%q err=%v", endpoint, secret, err)
 	}
@@ -111,6 +112,9 @@ func TestEventEnqueuesWebhookAndOperatorNtfy(t *testing.T) {
 	if webhookDelivery == nil || webhookDelivery.URL != endpoint.URL || webhookDelivery.SigningSecret != secret {
 		t.Fatalf("deliveries=%#v", sender.deliveries)
 	}
+	if webhookDelivery.AuthorizationHeader != "Authorization" || webhookDelivery.AuthorizationValue != "Bearer destination-secret" {
+		t.Fatalf("authorization=%q %q", webhookDelivery.AuthorizationHeader, webhookDelivery.AuthorizationValue)
+	}
 }
 
 func TestWebhookDeliveryRetriesAndCanBeRetriedAfterDeadLetter(t *testing.T) {
@@ -120,7 +124,7 @@ func TestWebhookDeliveryRetriesAndCanBeRetriedAfterDeadLetter(t *testing.T) {
 	user, _ := store.UpsertGitHubUser(ctx, 13, "owner", "", "")
 	project, _ := store.CreateProject(ctx, user.ID, "Widget", "widget")
 	token, _, _ := store.CreateProjectToken(ctx, user.ID, project.ID)
-	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"notice.created"})
+	_, _, _ = store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", []string{"notice.created"}, WebhookAuthorization{})
 	if _, err := store.CreateEvent(ctx, token, EventInput{Message: "Deploy finished"}); err != nil {
 		t.Fatal(err)
 	}
@@ -146,14 +150,83 @@ func TestWebhookDeliveryRetriesAndCanBeRetriedAfterDeadLetter(t *testing.T) {
 	}
 }
 
+func TestExistingWebhookTableAddsAuthorizationColumns(t *testing.T) {
+	path := t.TempDir() + "/raises.db"
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE webhook_endpoints (
+		id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, url_encrypted TEXT NOT NULL,
+		signing_secret_encrypted TEXT NOT NULL, events_json TEXT NOT NULL,
+		active INTEGER NOT NULL DEFAULT 1, created_at_unix INTEGER NOT NULL, updated_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, column := range []string{"authorization_header", "authorization_value_encrypted"} {
+		exists, err := store.columnExists(context.Background(), "webhook_endpoints", column)
+		if err != nil || !exists {
+			t.Fatalf("column %s exists=%v err=%v", column, exists, err)
+		}
+	}
+}
+
+func TestWebhookAuthorizationCanBeUpdatedOrCleared(t *testing.T) {
+	store, _ := testStore(t)
+	store.SetSecretCipher(testCipher{})
+	ctx := context.Background()
+	user, _ := store.UpsertGitHubUser(ctx, 16, "owner", "", "")
+	endpoint, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", nil, WebhookAuthorization{Header: "X-Webhook-Secret", Value: "first-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.AuthorizationHeader != "X-Webhook-Secret" {
+		t.Fatalf("endpoint=%#v", endpoint)
+	}
+	var encryptedValue string
+	if err := store.db.QueryRowContext(ctx, `SELECT authorization_value_encrypted FROM webhook_endpoints WHERE id=?`, endpoint.ID).Scan(&encryptedValue); err != nil {
+		t.Fatal(err)
+	}
+	if encryptedValue != "encrypted:first-secret" {
+		t.Fatalf("encrypted value=%q", encryptedValue)
+	}
+
+	preserved, err := store.UpdateWebhookEndpoint(ctx, user.ID, endpoint.ID, endpoint.URL, endpoint.Events, true, nil)
+	if err != nil || preserved.AuthorizationHeader != "X-Webhook-Secret" {
+		t.Fatalf("preserved=%#v err=%v", preserved, err)
+	}
+	replaced, err := store.UpdateWebhookEndpoint(ctx, user.ID, endpoint.ID, endpoint.URL, endpoint.Events, true, &WebhookAuthorization{Header: "Authorization", Value: "Bearer second-secret"})
+	if err != nil || replaced.AuthorizationHeader != "Authorization" {
+		t.Fatalf("replaced=%#v err=%v", replaced, err)
+	}
+	cleared, err := store.UpdateWebhookEndpoint(ctx, user.ID, endpoint.ID, endpoint.URL, endpoint.Events, true, &WebhookAuthorization{})
+	if err != nil || cleared.AuthorizationHeader != "" {
+		t.Fatalf("cleared=%#v err=%v", cleared, err)
+	}
+	if _, err := ValidateWebhookAuthorization(WebhookAuthorization{Header: "X-Raises-Signature", Value: "override"}); err == nil {
+		t.Fatal("expected Raises delivery headers to be reserved")
+	}
+}
+
 func TestWebhookEndpointLimitIncludesInactiveEndpoints(t *testing.T) {
+	if MaxWebhookEndpointsPerAccount != 20 {
+		t.Fatalf("webhook endpoint limit=%d", MaxWebhookEndpointsPerAccount)
+	}
 	store, _ := testStore(t)
 	store.SetSecretCipher(testCipher{})
 	ctx := context.Background()
 	user, _ := store.UpsertGitHubUser(ctx, 15, "owner", "", "")
 	var first WebhookEndpoint
 	for index := 0; index < MaxWebhookEndpointsPerAccount; index++ {
-		endpoint, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", nil)
+		endpoint, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/raises", nil, WebhookAuthorization{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,16 +234,16 @@ func TestWebhookEndpointLimitIncludesInactiveEndpoints(t *testing.T) {
 			first = endpoint
 		}
 	}
-	if _, err := store.UpdateWebhookEndpoint(ctx, user.ID, first.ID, first.URL, first.Events, false); err != nil {
+	if _, err := store.UpdateWebhookEndpoint(ctx, user.ID, first.ID, first.URL, first.Events, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/another", nil); err == nil {
+	if _, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/another", nil, WebhookAuthorization{}); err == nil {
 		t.Fatal("expected endpoint limit to include inactive endpoints")
 	}
 	if err := store.DeleteWebhookEndpoint(ctx, user.ID, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/replacement", nil); err != nil {
+	if _, _, err := store.CreateWebhookEndpoint(ctx, user.ID, "https://example.com/replacement", nil, WebhookAuthorization{}); err != nil {
 		t.Fatalf("create replacement: %v", err)
 	}
 }

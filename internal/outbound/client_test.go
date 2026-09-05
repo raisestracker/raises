@@ -57,6 +57,7 @@ func TestSendSignsExactWebhookBody(t *testing.T) {
 	})
 	delivery := inbox.OutboundDelivery{
 		ID: "obd_test", URL: "https://example.com/hook", SigningSecret: "whsec_test",
+		AuthorizationHeader: "Authorization", AuthorizationValue: "Bearer destination-secret",
 		Event: inbox.OutboundEvent{ID: "obe_test", ProjectID: "prj_test", Project: "Widget", Type: "notice.created", Payload: []byte(`{"notice":{"message":"done"}}`), CreatedAt: time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)},
 	}
 	if err := client.Send(context.Background(), delivery); err != nil {
@@ -75,5 +76,8 @@ func TestSendSignsExactWebhookBody(t *testing.T) {
 	}
 	if request.Header.Get("X-Raises-Delivery") != delivery.ID || request.Header.Get("X-Raises-Event") != delivery.Event.Type {
 		t.Fatalf("headers=%v", request.Header)
+	}
+	if request.Header.Get("Authorization") != "Bearer destination-secret" {
+		t.Fatalf("authorization=%q", request.Header.Get("Authorization"))
 	}
 }

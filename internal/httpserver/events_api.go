@@ -98,8 +98,10 @@ func (s *Server) createWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		URL    string   `json:"url"`
-		Events []string `json:"events"`
+		URL                 string   `json:"url"`
+		Events              []string `json:"events"`
+		AuthorizationHeader string   `json:"authorization_header"`
+		AuthorizationValue  string   `json:"authorization_value"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -108,7 +110,8 @@ func (s *Server) createWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	endpoint, secret, err := s.store.CreateWebhookEndpoint(r.Context(), userID, req.URL, req.Events)
+	authorization := inbox.WebhookAuthorization{Header: req.AuthorizationHeader, Value: req.AuthorizationValue}
+	endpoint, secret, err := s.store.CreateWebhookEndpoint(r.Context(), userID, req.URL, req.Events, authorization)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -122,9 +125,11 @@ func (s *Server) updateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		URL    string   `json:"url"`
-		Events []string `json:"events"`
-		Active bool     `json:"active"`
+		URL                 string   `json:"url"`
+		Events              []string `json:"events"`
+		Active              bool     `json:"active"`
+		AuthorizationHeader *string  `json:"authorization_header"`
+		AuthorizationValue  *string  `json:"authorization_value"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -133,7 +138,15 @@ func (s *Server) updateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	endpoint, err := s.store.UpdateWebhookEndpoint(r.Context(), userID, r.PathValue("id"), req.URL, req.Events, req.Active)
+	var authorization *inbox.WebhookAuthorization
+	if req.AuthorizationHeader != nil || req.AuthorizationValue != nil {
+		if req.AuthorizationHeader == nil || req.AuthorizationValue == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "authorization_header and authorization_value are required together"})
+			return
+		}
+		authorization = &inbox.WebhookAuthorization{Header: *req.AuthorizationHeader, Value: *req.AuthorizationValue}
+	}
+	endpoint, err := s.store.UpdateWebhookEndpoint(r.Context(), userID, r.PathValue("id"), req.URL, req.Events, req.Active, authorization)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return

@@ -88,11 +88,11 @@ Events are account-scoped and retained for 30 days, with a maximum of the newest
 
 ## Outbound webhooks
 
-An account can have up to three active webhook endpoints. All routes require an agent token.
+An account can have up to 20 webhook endpoints, including inactive endpoints. Delete an endpoint before creating another when the account reaches the limit. All routes require an agent token.
 
 - `GET /v1/webhook-endpoints`
-- `POST /v1/webhook-endpoints` with `{"url":"https://example.com/raises","events":["notice.created"]}`
-- `PATCH /v1/webhook-endpoints/:id` with the complete replacement `url`, `events`, and `active` values
+- `POST /v1/webhook-endpoints` with `{"url":"https://example.com/raises","events":["notice.created"],"authorization_header":"Authorization","authorization_value":"Bearer destination-secret"}`
+- `PATCH /v1/webhook-endpoints/:id` with the complete replacement `url`, `events`, and `active` values. Omit both authorization fields to preserve the current header. Provide both to replace it. Send both as empty strings to clear it.
 - `DELETE /v1/webhook-endpoints/:id`
 - `POST /v1/webhook-endpoints/:id/rotate-secret`
 - `POST /v1/webhook-endpoints/:id/test`
@@ -101,7 +101,19 @@ An account can have up to three active webhook endpoints. All routes require an 
 
 Supported subscriptions are `notice.created`, `error.created`, `error.regressed`, `github_issue.opened`, and `github_issue.reopened`. `webhook.test` is emitted only by the test route. Omitting `events` subscribes to all non-test events.
 
-Create and rotation responses return `signing_secret` once. Raises encrypts endpoint URLs and signing secrets at rest. Store the secret immediately; list responses never include it.
+Create and rotation responses return `signing_secret` once. Raises encrypts endpoint URLs, signing secrets, and authorization values at rest. Store the signing secret immediately; list responses never include it.
+
+A destination that requires authentication can use `authorization_header` and `authorization_value`. Provide both fields together. The value is the complete HTTP header value, including an authentication scheme when required. For example:
+
+```json
+{
+  "url": "https://example.com/raises",
+  "authorization_header": "Authorization",
+  "authorization_value": "Bearer destination-secret"
+}
+```
+
+For a custom secret header, use `"authorization_header":"X-Webhook-Secret"` and put the raw secret in `authorization_value`. Raises returns the configured header name as `authorization_header` but never returns its value. Raises rejects hop-by-hop headers, payload headers, `User-Agent`, and `X-Raises-*` headers because it controls them.
 
 Each request is an HTTPS `POST` with this envelope:
 
@@ -115,7 +127,7 @@ Each request is an HTTPS `POST` with this envelope:
 }
 ```
 
-Headers are `X-Raises-Delivery`, `X-Raises-Event`, `X-Raises-Timestamp`, and `X-Raises-Signature`. Verify `X-Raises-Signature` as lowercase hex HMAC-SHA256 using the exact request body and this signed value:
+Headers are `X-Raises-Delivery`, `X-Raises-Event`, `X-Raises-Timestamp`, and `X-Raises-Signature`, plus the configured authorization header when present. Verify `X-Raises-Signature` as lowercase hex HMAC-SHA256 using the exact request body and this signed value:
 
 ```text
 <X-Raises-Timestamp>.<raw request body>

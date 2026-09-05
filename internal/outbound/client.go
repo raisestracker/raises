@@ -95,6 +95,10 @@ func (c *Client) Send(ctx context.Context, delivery inbox.OutboundDelivery) erro
 	if err := ValidateURL(delivery.URL); err != nil {
 		return &DeliveryError{message: err.Error(), permanent: true}
 	}
+	authorization, err := inbox.ValidateWebhookAuthorization(inbox.WebhookAuthorization{Header: delivery.AuthorizationHeader, Value: delivery.AuthorizationValue})
+	if err != nil {
+		return &DeliveryError{message: err.Error(), permanent: true}
+	}
 	envelope := map[string]any{
 		"id":         delivery.Event.ID,
 		"type":       delivery.Event.Type,
@@ -122,6 +126,9 @@ func (c *Client) Send(ctx context.Context, delivery inbox.OutboundDelivery) erro
 	req.Header.Set("X-Raises-Event", delivery.Event.Type)
 	req.Header.Set("X-Raises-Timestamp", timestamp)
 	req.Header.Set("X-Raises-Signature", "v1="+hex.EncodeToString(mac.Sum(nil)))
+	if authorization.Header != "" {
+		req.Header.Set(authorization.Header, authorization.Value)
+	}
 	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return &DeliveryError{message: "deliver webhook: " + err.Error()}

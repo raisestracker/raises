@@ -19,7 +19,7 @@ Read `https://raises.dev/llms.txt` before setup. Use `Authorization: Bearer $RAI
 
 Use `Raises.notify("message", level: :info, context: {}, source: nil)` in Rails or `client.Notify(ctx, "message", raises.Event{Level: raises.Info})` in Go for operational information that must not create an error group or GitHub issue. Query retained notices through `/v1/events`.
 
-Agents can manage signed account-scoped integrations through `/v1/webhook-endpoints`. Store each one-time signing secret securely, send a test delivery, inspect `/v1/webhook-deliveries`, and retry only dead deliveries.
+Agents can manage up to 20 signed account-scoped integrations through `/v1/webhook-endpoints`. If a destination requires authentication, send `authorization_header` and `authorization_value` together when creating the endpoint. Use the complete header value, such as `Authorization: Bearer <secret>` or `X-Webhook-Secret: <secret>`. Raises encrypts the value and omits it from API responses. Omit both fields on update to preserve the current authorization header, provide both to replace it, or send both as empty strings to clear it. Store destination secrets and each one-time signing secret securely. Send a test delivery, inspect `/v1/webhook-deliveries`, and retry only dead deliveries.
 
 ## Investigate
 

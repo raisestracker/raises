@@ -190,9 +190,9 @@ func (s *Store) ProcessOutboundDeliveriesOnce(ctx context.Context, sender Outbou
 		return nil
 	}
 	if delivery.DestinationKind == "webhook" {
-		var encryptedURL, encryptedSecret string
+		var encryptedURL, encryptedSecret, encryptedAuthorizationValue string
 		var active int
-		err = s.db.QueryRowContext(ctx, `SELECT url_encrypted,signing_secret_encrypted,active FROM webhook_endpoints WHERE id=? AND owner_user_id=?`, delivery.EndpointID, delivery.Event.OwnerUserID).Scan(&encryptedURL, &encryptedSecret, &active)
+		err = s.db.QueryRowContext(ctx, `SELECT url_encrypted,signing_secret_encrypted,authorization_header,authorization_value_encrypted,active FROM webhook_endpoints WHERE id=? AND owner_user_id=?`, delivery.EndpointID, delivery.Event.OwnerUserID).Scan(&encryptedURL, &encryptedSecret, &delivery.AuthorizationHeader, &encryptedAuthorizationValue, &active)
 		if errors.Is(err, sql.ErrNoRows) || active == 0 {
 			return s.completeOutbound(ctx, delivery.ID, now)
 		}
@@ -200,7 +200,9 @@ func (s *Store) ProcessOutboundDeliveriesOnce(ctx context.Context, sender Outbou
 			if s.secretCipher == nil {
 				err = fmt.Errorf("webhook encryption is unavailable")
 			} else if delivery.URL, err = s.secretCipher.Decrypt(encryptedURL); err == nil {
-				delivery.SigningSecret, err = s.secretCipher.Decrypt(encryptedSecret)
+				if delivery.SigningSecret, err = s.secretCipher.Decrypt(encryptedSecret); err == nil && encryptedAuthorizationValue != "" {
+					delivery.AuthorizationValue, err = s.secretCipher.Decrypt(encryptedAuthorizationValue)
+				}
 			}
 		}
 	} else if delivery.Event.GroupID > 0 {
