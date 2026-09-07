@@ -123,6 +123,32 @@ func TestSuppressAndUnsuppressErrorAPI(t *testing.T) {
 	}
 }
 
+func TestCanonicalURL(t *testing.T) {
+	s := &Server{config: Config{BaseURL: "https://raises.dev"}}
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "/", want: "https://raises.dev/"},
+		{path: "/settings", want: "https://raises.dev/settings"},
+		{path: "/errors/42", want: "https://raises.dev/errors/42"},
+	} {
+		if got := s.canonicalURL(test.path); got != test.want {
+			t.Fatalf("canonicalURL(%q) = %q, want %q", test.path, got, test.want)
+		}
+	}
+
+	local := &Server{config: Config{BaseURL: "http://localhost:8080"}}
+	if got := local.canonicalURL("/settings"); got != "http://localhost:8080/settings" {
+		t.Fatalf("local canonical = %q", got)
+	}
+
+	defaultBase := &Server{}
+	if got := defaultBase.canonicalURL("/"); got != "https://raises.dev/" {
+		t.Fatalf("default canonical = %q", got)
+	}
+}
+
 func TestHomepage(t *testing.T) {
 	handler := testHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -130,6 +156,9 @@ func TestHomepage(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("raises")) {
 		t.Fatalf("home = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `<link rel="canonical" href="https://raises.dev/"`) {
+		t.Fatalf("homepage is missing canonical link: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "G-16MS9N28TE") {
 		t.Fatal("homepage is missing Google tag")
@@ -278,7 +307,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", `<link rel="canonical" href="https://raises.dev/settings"`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -355,7 +384,7 @@ func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail=%d %s", detailRec.Code, detailRec.Body.String())
 	}
-	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", `href="/settings" aria-label="Raises dashboard"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", `href="/settings" aria-label="Raises dashboard"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", `<link rel="canonical" href="https://raises.dev/errors/1"`} {
 		if !strings.Contains(detailRec.Body.String(), want) {
 			t.Fatalf("detail missing %q", want)
 		}

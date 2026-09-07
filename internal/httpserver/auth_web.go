@@ -29,6 +29,7 @@ type settingsData struct {
 	Installations   []settingsInstallation
 	InstallURL      string
 	StylePath       string
+	CanonicalURL    string
 	BootstrapPrompt string
 	NewAgentToken   string
 	Delivery        settingsDeliveryHealth
@@ -51,11 +52,12 @@ type settingsInstallation struct {
 }
 
 type errorDetailData struct {
-	User      inbox.User
-	CSRF      string
-	StylePath string
-	Group     inbox.Group
-	Notices   []inbox.Notice
+	User         inbox.User
+	CSRF         string
+	StylePath    string
+	CanonicalURL string
+	Group        inbox.Group
+	Notices      []inbox.Notice
 }
 
 func (s *Server) beginGitHubAuth(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +269,7 @@ func (s *Server) renderSettingsRequest(w http.ResponseWriter, r *http.Request, s
 		http.Error(w, "invalid settings template", 500)
 		return
 	}
-	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, RecentErrors: recentErrors}
+	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, CanonicalURL: s.canonicalURL("/settings"), BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, RecentErrors: recentErrors}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, data); err != nil {
 		s.logger.Error("render settings", "error", err)
@@ -372,7 +374,7 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid error template", 500)
 		return
 	}
-	data := errorDetailData{User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, Group: group, Notices: notices}
+	data := errorDetailData{User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, CanonicalURL: s.canonicalURL(fmt.Sprintf("/errors/%d", id)), Group: group, Notices: notices}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, data); err != nil {
 		s.logger.Error("render error detail", "error", err)
