@@ -6,7 +6,7 @@ RUN npm ci --ignore-scripts
 COPY web ./web
 RUN npm run build:css
 
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS build
 
 ARG TARGETARCH=amd64
 WORKDIR /src
