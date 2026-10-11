@@ -14,7 +14,7 @@ import (
 
 const (
 	MaxActiveProjects        = 5
-	MaxActiveAgentKeys       = 5
+	MaxActiveAgentKeys       = 100
 	MaxActiveProjectTokens   = 3
 	MaxErrorGroupsPerAccount = 10_000
 )
