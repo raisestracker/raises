@@ -207,9 +207,29 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	if err := tmpl.Execute(w, struct{ StylePath string }{StylePath: s.stylePath}); err != nil {
+	if err := tmpl.Execute(w, struct {
+		StylePath    string
+		CanonicalURL string
+	}{
+		StylePath:    s.stylePath,
+		CanonicalURL: s.canonicalURL("/"),
+	}); err != nil {
 		s.logger.Error("render index", "error", err)
 	}
+}
+
+func (s *Server) canonicalURL(path string) string {
+	base := strings.TrimRight(s.config.BaseURL, "/")
+	if base == "" {
+		base = "https://raises.dev"
+	}
+	if path == "" || path == "/" {
+		return base + "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + path
 }
 
 func embeddedStylesheetPath() string {
