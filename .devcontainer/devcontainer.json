@@ -1,0 +1,27 @@
+{
+  "name": "Raises / Go 1.26.9 and Node 24",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "containerUser": "agent",
+  "remoteUser": "agent",
+  "updateRemoteUserUID": false,
+  "userEnvProbe": "none",
+  "containerEnv": {
+    "HOME": "/home/agent"
+  },
+  "runArgs": [
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--pids-limit=512",
+    "--memory=4g",
+    "--cpus=2",
+    "--tmpfs=/tmp:rw,exec,nosuid,nodev,mode=1777,size=1g",
+    "--tmpfs=/home/agent:rw,exec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=512m"
+  ],
+  "overrideCommand": true
+}
