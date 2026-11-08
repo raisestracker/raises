@@ -573,6 +573,8 @@ func TestHomepageMarkdownNegotiation(t *testing.T) {
 		{"text/html, text/markdown;q=0.5", false},
 		{"text/markdown;q=0", false}, {"text/markdown;q=invalid", false},
 		{"text/markdown;q=2", false},
+		{"text/markdown, */*;q=0.8", true}, {"text/markdown;q=0.5, */*", false},
+		{"text/markdown;q=0.5, text/*", false}, {"text/markdown;q=0.5, text/html;q=0.1, */*", true},
 	} {
 		t.Run(test.accept, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)

@@ -228,7 +228,8 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 
 // Only an explicit Markdown preference changes the browser's default HTML response.
 func prefersMarkdown(headers []string) bool {
-	markdown, html := 0.0, 0.0
+	// HTML quality comes from the most specific matching range (RFC 9110 12.5.1).
+	markdown, html, textAny, anyType := 0.0, -1.0, -1.0, -1.0
 	for _, header := range headers {
 		for _, part := range strings.Split(header, ",") {
 			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
@@ -247,8 +248,18 @@ func prefersMarkdown(headers []string) bool {
 				markdown = quality
 			case "text/html":
 				html = quality
+			case "text/*":
+				textAny = quality
+			case "*/*":
+				anyType = quality
 			}
 		}
+	}
+	if html < 0 {
+		html = textAny
+	}
+	if html < 0 {
+		html = anyType
 	}
 	return markdown > 0 && markdown >= html
 }
