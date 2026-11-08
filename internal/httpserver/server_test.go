@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -507,4 +508,94 @@ func testHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	return New(store, "agent-token", slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20).Handler()
+}
+
+func TestPublicDiscovery(t *testing.T) {
+	handler := testHandler(t)
+	for _, path := range []string{"/", "/robots.txt", "/sitemap.xml"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", path, rec.Code)
+		}
+		switch path {
+		case "/":
+			for _, link := range []string{`</sitemap.xml>; rel="sitemap"`, `</llms.txt>; rel="describedby"`} {
+				if !strings.Contains(rec.Header().Get("Link"), link) {
+					t.Errorf("missing link %s", link)
+				}
+			}
+			if rec.Header().Get("Vary") != "Accept" {
+				t.Error("missing Vary: Accept")
+			}
+		case "/robots.txt":
+			for _, want := range []string{"User-agent: *\nAllow: /", "Content-Signal: search=yes, ai-input=yes, ai-train=no", "Sitemap: https://raises.dev/sitemap.xml"} {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Errorf("missing robots directive %s", want)
+				}
+			}
+		case "/sitemap.xml":
+			var sitemap struct {
+				XMLName xml.Name
+				URLs    []struct {
+					Location string `xml:"loc"`
+				} `xml:"url"`
+			}
+			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
+				t.Fatal(err)
+			}
+			if sitemap.XMLName.Space != "http://www.sitemaps.org/schemas/sitemap/0.9" || len(sitemap.URLs) != 4 {
+				t.Fatalf("invalid sitemap: %+v", sitemap)
+			}
+			for _, entry := range sitemap.URLs {
+				if !strings.HasPrefix(entry.Location, "https://raises.dev/") {
+					t.Fatalf("unexpected URL %s", entry.Location)
+				}
+				page := httptest.NewRecorder()
+				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, entry.Location, nil))
+				if page.Code != http.StatusOK {
+					t.Errorf("sitemap URL %s: %d", entry.Location, page.Code)
+				}
+			}
+		}
+	}
+}
+
+func TestHomepageMarkdownNegotiation(t *testing.T) {
+	handler := testHandler(t)
+	for _, test := range []struct {
+		accept   string
+		markdown bool
+	}{
+		{"", false}, {"*/*", false}, {"text/html", false},
+		{"text/markdown", true}, {"text/markdown; charset=utf-8", true},
+		{"text/html;q=0.5, text/markdown", true},
+		{"text/html, text/markdown;q=0.5", false},
+		{"text/markdown;q=0", false}, {"text/markdown;q=invalid", false},
+		{"text/markdown;q=2", false},
+	} {
+		t.Run(test.accept, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Accept", test.accept)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			markdown := strings.HasPrefix(rec.Header().Get("Content-Type"), "text/markdown")
+			if rec.Code != http.StatusOK || markdown != test.markdown {
+				t.Fatalf("status=%d type=%s", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			if rec.Header().Get("Vary") != "Accept" {
+				t.Error("missing Vary: Accept")
+			}
+			if test.markdown && (!strings.HasPrefix(rec.Body.String(), "# Raises") || strings.Contains(rec.Body.String(), "<html")) {
+				t.Error("invalid markdown body")
+			}
+		})
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+	req.Header.Set("Accept", "text/markdown")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown path status=%d", rec.Code)
+	}
 }

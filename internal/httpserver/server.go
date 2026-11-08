@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -136,6 +137,12 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /style.css", s.stylesheet)
 	mux.HandleFunc("GET /assets/{name}", s.stylesheet)
 	mux.HandleFunc("GET /app-icon.png", s.appIcon)
+	mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		s.serveTextAsset(w, "robots.txt", "text/plain; charset=utf-8")
+	})
+	mux.HandleFunc("GET /sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		s.serveTextAsset(w, "sitemap.xml", "application/xml; charset=utf-8")
+	})
 	mux.HandleFunc("GET /llms.txt", s.llmsText)
 	mux.HandleFunc("GET /skill.md", s.skillText)
 	mux.HandleFunc("GET /migration.md", s.migrationText)
@@ -195,6 +202,13 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Add("Vary", "Accept")
+	w.Header().Set("Link", `</sitemap.xml>; rel="sitemap", </llms.txt>; rel="describedby"; type="text/plain"`)
+	w.Header().Set("Cache-Control", "no-cache")
+	if prefersMarkdown(r.Header.Values("Accept")) {
+		s.serveTextAsset(w, "index.md", "text/markdown; charset=utf-8")
+		return
+	}
 	body, err := web.FS.ReadFile("index.html")
 	if err != nil {
 		http.Error(w, "missing index", http.StatusInternalServerError)
@@ -210,6 +224,33 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	if err := tmpl.Execute(w, struct{ StylePath string }{StylePath: s.stylePath}); err != nil {
 		s.logger.Error("render index", "error", err)
 	}
+}
+
+// Only an explicit Markdown preference changes the browser's default HTML response.
+func prefersMarkdown(headers []string) bool {
+	markdown, html := 0.0, 0.0
+	for _, header := range headers {
+		for _, part := range strings.Split(header, ",") {
+			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+			if err != nil {
+				continue
+			}
+			quality := 1.0
+			if value, ok := params["q"]; ok {
+				quality, err = strconv.ParseFloat(value, 64)
+				if err != nil || quality < 0 || quality > 1 {
+					continue
+				}
+			}
+			switch mediaType {
+			case "text/markdown":
+				markdown = quality
+			case "text/html":
+				html = quality
+			}
+		}
+	}
+	return markdown > 0 && markdown >= html
 }
 
 func embeddedStylesheetPath() string {
