@@ -21,6 +21,8 @@ Migrating from Honeybadger, Rollbar, or Sentry? Read and follow https://raises.d
 
 All agent API requests except bootstrap exchange and notice ingestion use `Authorization: Bearer $RAISES_AGENT_TOKEN`.
 
+An owner-level account key (created once in the settings UI) mints further agent keys without another browser round-trip: `POST /v1/agent-keys {"name":"..."}`, plus list and revoke via `GET`/`DELETE /v1/agent-keys`. See https://github.com/raisestracker/raises/blob/master/docs/api.md for the exact contract.
+
 ## Error workflow
 
 Read the group and recent notices through the API, inspect the referenced application code, reproduce and fix the failure, run relevant tests, open a draft pull request referencing the group's GitHub issue URL, then acknowledge with `POST /v1/errors/:id/ack`. Do not close the GitHub issue manually and do not paste backtraces into prompts when the API is available.

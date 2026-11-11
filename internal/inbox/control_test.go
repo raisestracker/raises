@@ -108,6 +108,58 @@ func TestArchivedProjectCannotExceedActiveLimitWhenRestored(t *testing.T) {
 	}
 }
 
+func TestAccountKeyMintsAgentKeysWithAuditTrail(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	user, err := store.UpsertGitHubUser(ctx, 6334, "demo", "Demo User", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountToken, accountKey, err := store.CreateAccountKey(ctx, user.ID, "CI host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accountKey.CanMint || accountKey.MintedByKeyID != nil {
+		t.Fatalf("account key=%#v", accountKey)
+	}
+	ownerID, parentID, err := store.AuthenticateAccountKey(ctx, accountToken)
+	if err != nil || ownerID != user.ID || parentID != accountKey.ID {
+		t.Fatalf("owner=%d parent=%q err=%v", ownerID, parentID, err)
+	}
+	mintedToken, mintedKey, err := store.MintAgentKey(ctx, user.ID, accountKey.ID, "SuperReception")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mintedKey.CanMint || mintedKey.MintedByKeyID == nil || *mintedKey.MintedByKeyID != accountKey.ID {
+		t.Fatalf("minted key=%#v", mintedKey)
+	}
+	if _, _, err := store.AuthenticateAccountKey(ctx, mintedToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("minted key must not authenticate as an account key: %v", err)
+	}
+	if got, err := store.AuthenticateAgent(ctx, mintedToken); err != nil || got != user.ID {
+		t.Fatalf("minted key must work as an agent key: user=%d err=%v", got, err)
+	}
+	if err := store.RevokeAgentKey(ctx, user.ID, accountKey.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AuthenticateAccountKey(ctx, accountToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked account key still authenticates: %v", err)
+	}
+	if got, err := store.AuthenticateAgent(ctx, mintedToken); err != nil || got != user.ID {
+		t.Fatalf("revoking the account key must leave minted keys usable: user=%d err=%v", got, err)
+	}
+	if _, _, err := store.MintAgentKey(ctx, user.ID, accountKey.ID, "after revoke"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked account key must not mint: %v", err)
+	}
+	ordinary, _, err := store.CreateAgentKey(ctx, user.ID, "ordinary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AuthenticateAccountKey(ctx, ordinary); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ordinary agent key must not authenticate as an account key: %v", err)
+	}
+}
+
 func TestLegacySchemaMigratesInPlace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)

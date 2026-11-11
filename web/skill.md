@@ -11,6 +11,8 @@ For migrations from Honeybadger, Rollbar, or Sentry, read https://raises.dev/mig
 
 Use `Authorization: Bearer $RAISES_AGENT_TOKEN` for agent endpoints. Keep the token in the user's approved secret manager; never commit or echo it.
 
+For fleets of apps, ask the human to create one account key in the settings UI; it mints further agent keys via `POST /v1/agent-keys` (list and revoke with `GET`/`DELETE /v1/agent-keys`) without another browser round-trip.
+
 ## Investigate
 
 1. `GET /v1/errors?app=<project-slug>&unacked=1`
