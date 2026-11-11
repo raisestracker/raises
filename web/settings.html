@@ -353,7 +353,15 @@
               body: new FormData(bootstrapForm),
               headers: { Accept: "application/json" }
             });
-            const payload = await response.json();
+            const bootstrapContentType = response.headers.get("content-type") || "";
+            let payload = null;
+            if (bootstrapContentType.includes("application/json")) {
+              payload = await response.json();
+            } else if (!response.ok) {
+              throw new Error(`Could not create prompt (server returned ${response.status})`);
+            } else {
+              throw new Error("Your session may have expired. Reload the page and try again.");
+            }
             if (!response.ok) throw new Error(payload.error || "Could not create prompt");
 
             bootstrapPrompt.value = payload.prompt;
