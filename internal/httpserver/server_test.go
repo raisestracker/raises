@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -394,6 +395,177 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	}
 	if err := json.Unmarshal(accountRec.Body.Bytes(), &accountCreated); err != nil || accountCreated.Token == "" || !accountCreated.Key.CanMint {
 		t.Fatalf("accountCreated=%#v err=%v body=%s", accountCreated, err, accountRec.Body.String())
+	}
+}
+
+func TestSettingsAgentKeyNameHintAndPlainName(t *testing.T) {
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, _ := store.UpsertGitHubUser(context.Background(), 6339, "hint", "", "")
+	token, session, err := store.CreateSession(context.Background(), user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{GitHubAppSlug: "raises"}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="agent-name-hint"`) {
+		t.Fatal("settings is missing the agent name format hint")
+	}
+	if strings.Contains(body, `id="agent-name" name="name" placeholder="e.g. Codex on my Mac"`) {
+		t.Fatal("settings still shows the stale placeholder without parentheses example")
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, `id="agent-name"`) && strings.Contains(line, "pattern=") {
+			t.Fatalf("agent name input must not carry a restrictive pattern: %s", strings.TrimSpace(line))
+		}
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=Superreception"))
+	create.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	create.Header.Set("Accept", "application/json")
+	create.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, create)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("plain name create=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=Bad%3Cname%3E"))
+	bad.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	bad.Header.Set("Accept", "application/json")
+	bad.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	badRec := httptest.NewRecorder()
+	handler.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "agent name is not valid") {
+		t.Fatalf("invalid name create=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+}
+
+func TestCreateBrowserAgentKeyJSONFailuresStayJSON(t *testing.T) {
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, _ := store.UpsertGitHubUser(context.Background(), 6340, "jsonfail", "", "")
+	token, session, err := store.CreateSession(context.Background(), user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{GitHubAppSlug: "raises"}).Handler()
+	post := func(body, cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: sessionCookie, Value: cookie})
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// No session (expired or missing cookie): the fetch client parses the body
+	// as JSON, so a redirect to an HTML login page surfaces as a JSON parse
+	// error in the browser. It must be a JSON 401 instead.
+	anon := post("csrf=x&name=Ghost&account_key=1", "")
+	if anon.Code != http.StatusUnauthorized || !strings.Contains(anon.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("anonymous create=%d content-type=%q body=%q", anon.Code, anon.Header().Get("Content-Type"), anon.Body.String())
+	}
+	var anonErr struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(anon.Body.Bytes(), &anonErr); err != nil || anonErr.Error == "" {
+		t.Fatalf("anonymous body is not a JSON error: %q err=%v", anon.Body.String(), err)
+	}
+
+	// Wrong CSRF token with a valid session cookie: must be a JSON 403, not
+	// plain text, for the same reason.
+	forged := post("csrf=wrong&name=Ghost&account_key=1", token)
+	if forged.Code != http.StatusForbidden || !strings.Contains(forged.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("forged csrf create=%d content-type=%q body=%q", forged.Code, forged.Header().Get("Content-Type"), forged.Body.String())
+	}
+	var forgedErr struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(forged.Body.Bytes(), &forgedErr); err != nil || forgedErr.Error == "" {
+		t.Fatalf("forged csrf body is not a JSON error: %q err=%v", forged.Body.String(), err)
+	}
+
+	// Sanity: the real session + CSRF still creates an account key.
+	account := post("csrf="+session.CSRFToken+"&name=CI+host&account_key=1", token)
+	if account.Code != http.StatusCreated {
+		t.Fatalf("account key create=%d body=%s", account.Code, account.Body.String())
+	}
+}
+
+func TestCreateBrowserAgentKeyMultipartFormData(t *testing.T) {
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, _ := store.UpsertGitHubUser(context.Background(), 6341, "multipart", "", "")
+	token, session, err := store.CreateSession(context.Background(), user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{GitHubAppSlug: "raises"}).Handler()
+	// The settings page submits with fetch + FormData, which is multipart.
+	// ParseForm alone leaves multipart fields unparsed, which used to fail the
+	// CSRF check and surface in Safari as a JSON parse error.
+	multipartPost := func(fields map[string]string) *httptest.ResponseRecorder {
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		for k, v := range fields {
+			if err := w.WriteField(k, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", &buf)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("Accept", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	plain := multipartPost(map[string]string{"csrf": session.CSRFToken, "name": "Superreception"})
+	if plain.Code != http.StatusCreated {
+		t.Fatalf("multipart plain name=%d content-type=%q body=%s", plain.Code, plain.Header().Get("Content-Type"), plain.Body.String())
+	}
+	var created struct {
+		Token string         `json:"token"`
+		Key   inbox.AgentKey `json:"key"`
+	}
+	if err := json.Unmarshal(plain.Body.Bytes(), &created); err != nil || created.Token == "" || created.Key.Name != "Superreception" {
+		t.Fatalf("multipart created=%#v err=%v", created, err)
+	}
+
+	account := multipartPost(map[string]string{"csrf": session.CSRFToken, "name": "raises-account-key", "account_key": "1"})
+	if account.Code != http.StatusCreated {
+		t.Fatalf("multipart account key=%d body=%s", account.Code, account.Body.String())
+	}
+	var accountCreated struct {
+		Token string         `json:"token"`
+		Key   inbox.AgentKey `json:"key"`
+	}
+	if err := json.Unmarshal(account.Body.Bytes(), &accountCreated); err != nil || !accountCreated.Key.CanMint {
+		t.Fatalf("multipart accountCreated=%#v err=%v", accountCreated, err)
 	}
 }
 

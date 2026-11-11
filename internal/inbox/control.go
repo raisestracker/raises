@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -26,6 +27,28 @@ const (
 	maxProjectNameLength = 100
 	maxProjectSlugLength = 63
 )
+
+// agentNameHelp describes the accepted format wherever agent key names are entered.
+const agentNameHelp = "use letters, numbers, spaces, hyphens, underscores, periods, apostrophes and parentheses (up to 80 characters)"
+
+func normalizeAgentName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("agent name is required")
+	}
+	if len([]rune(trimmed)) > maxAgentNameLength {
+		return "", fmt.Errorf("agent name is too long")
+	}
+	for _, r := range trimmed {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+		case r == ' ' || r == '-' || r == '_' || r == '.' || r == '\'' || r == '(' || r == ')':
+		default:
+			return "", fmt.Errorf("agent name is not valid: %s", agentNameHelp)
+		}
+	}
+	return trimmed, nil
+}
 
 type User struct {
 	ID        int64     `json:"id"`
@@ -423,8 +446,12 @@ func (s *Store) userByID(ctx context.Context, id int64) (User, error) {
 
 func (s *Store) CreateBootstrapToken(ctx context.Context, userID int64, name string, ttl time.Duration) (string, error) {
 	name = strings.TrimSpace(name)
-	if len(name) > maxAgentNameLength {
-		return "", fmt.Errorf("agent name is too long")
+	if name != "" {
+		validated, err := normalizeAgentName(name)
+		if err != nil {
+			return "", err
+		}
+		name = validated
 	}
 	token, err := randomID("boot_", 32)
 	if err != nil {
@@ -463,10 +490,11 @@ func (s *Store) ExchangeBootstrapToken(ctx context.Context, bootstrapToken, name
 	if strings.TrimSpace(name) == "" {
 		name = "Agent"
 	}
-	if len(strings.TrimSpace(name)) > maxAgentNameLength {
-		return "", AgentKey{}, fmt.Errorf("agent name is too long")
+	validated, err := normalizeAgentName(name)
+	if err != nil {
+		return "", AgentKey{}, err
 	}
-	token, key, err := createAgentKeyTx(ctx, tx, userID, name, false, "", s.now().UTC())
+	token, key, err := createAgentKeyTx(ctx, tx, userID, validated, false, "", s.now().UTC())
 	if err != nil {
 		return "", AgentKey{}, err
 	}
@@ -529,10 +557,11 @@ func (s *Store) createAccountScopedKey(ctx context.Context, userID int64, name s
 	if strings.TrimSpace(name) == "" {
 		name = "Agent"
 	}
-	if len(strings.TrimSpace(name)) > maxAgentNameLength {
-		return "", AgentKey{}, fmt.Errorf("agent name is too long")
+	validated, err := normalizeAgentName(name)
+	if err != nil {
+		return "", AgentKey{}, err
 	}
-	token, key, err := createAgentKeyTx(ctx, tx, userID, name, canMint, mintedBy, s.now().UTC())
+	token, key, err := createAgentKeyTx(ctx, tx, userID, validated, canMint, mintedBy, s.now().UTC())
 	if err != nil {
 		return "", AgentKey{}, err
 	}
@@ -584,10 +613,11 @@ func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, nam
 	if strings.TrimSpace(name) == "" {
 		name = "Agent"
 	}
-	if len(strings.TrimSpace(name)) > maxAgentNameLength {
-		return "", AgentKey{}, fmt.Errorf("agent name is too long")
+	validated, err := normalizeAgentName(name)
+	if err != nil {
+		return "", AgentKey{}, err
 	}
-	token, key, err := createAgentKeyTx(ctx, tx, userID, name, false, parentKeyID, s.now().UTC())
+	token, key, err := createAgentKeyTx(ctx, tx, userID, validated, false, parentKeyID, s.now().UTC())
 	if err != nil {
 		return "", AgentKey{}, err
 	}

@@ -289,12 +289,20 @@ func (s *Server) createBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createBrowserAgentKey(w http.ResponseWriter, r *http.Request) {
-	session, ok := s.browserPOST(w, r)
+	wantJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+	session, ok := s.browserKeySession(w, r, wantJSON)
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", 400)
+	// ParseMultipartForm covers both urlencoded and multipart (fetch FormData)
+	// bodies. ParseForm alone would leave multipart fields unparsed, and a
+	// later FormValue would then miss them.
+	if err := r.ParseMultipartForm(10 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		if wantJSON {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid form"})
+		} else {
+			http.Error(w, "invalid form", 400)
+		}
 		return
 	}
 	var (
@@ -471,8 +479,37 @@ func (s *Server) browserPOST(w http.ResponseWriter, r *http.Request) (inbox.Sess
 	if !ok {
 		return inbox.Session{}, false
 	}
-	if err := r.ParseForm(); err != nil || !github.ConstantTimeEqual(session.CSRFToken, r.FormValue("csrf")) {
+	// ParseMultipartForm covers both urlencoded and multipart (fetch FormData)
+	// bodies. ParseForm alone would leave multipart fields unparsed, and the
+	// FormValue below would then miss the CSRF token.
+	if err := r.ParseMultipartForm(10 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) || !github.ConstantTimeEqual(session.CSRFToken, r.FormValue("csrf")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return inbox.Session{}, false
+	}
+	return session, true
+}
+
+// browserKeySession authenticates the settings agent-key form. Clients that
+// asked for JSON (the settings fetch client) get JSON errors instead of a
+// redirect to an HTML page or a plain-text body, so response.json() always
+// parses and the real status surfaces. Plain form posts keep the old behavior.
+func (s *Server) browserKeySession(w http.ResponseWriter, r *http.Request, wantJSON bool) (inbox.Session, bool) {
+	if !wantJSON {
+		return s.browserPOST(w, r)
+	}
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "sign in again to create a key"})
+		return inbox.Session{}, false
+	}
+	session, err := s.store.SessionByToken(r.Context(), cookie.Value)
+	if err != nil {
+		s.clearCookie(w, sessionCookie)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "sign in again to create a key"})
+		return inbox.Session{}, false
+	}
+	if ferr := r.ParseMultipartForm(10 << 20); ferr != nil && !errors.Is(ferr, http.ErrNotMultipart) || !github.ConstantTimeEqual(session.CSRFToken, r.FormValue("csrf")) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "could not verify this browser session; reload the page and try again"})
 		return inbox.Session{}, false
 	}
 	return session, true
