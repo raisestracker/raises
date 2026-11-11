@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +33,35 @@ func TestBootstrapCreatesScopedAgentKeyOnce(t *testing.T) {
 	}
 	if _, _, err := store.ExchangeBootstrapToken(ctx, bootstrap, "again"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("reuse err=%v", err)
+	}
+}
+
+func TestAgentKeyNameAcceptsPlainNames(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	user, err := store.UpsertGitHubUser(ctx, 6335, "namer", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Superreception", "Claude Code (plonkboard)", "Codex on my Mac"} {
+		if _, key, err := store.CreateAgentKey(ctx, user.ID, name); err != nil || key.Name != name {
+			t.Fatalf("CreateAgentKey(%q) = %#v err=%v", name, key, err)
+		}
+	}
+	if _, _, err := store.CreateAgentKey(ctx, user.ID, "Bad<name>"); err == nil {
+		t.Fatal("expected angle brackets to be rejected")
+	}
+	if _, _, err := store.CreateAgentKey(ctx, user.ID, "has/slash"); err == nil {
+		t.Fatal("expected slash to be rejected")
+	}
+	if _, _, err := store.CreateAgentKey(ctx, user.ID, strings.Repeat("a", 81)); err == nil {
+		t.Fatal("expected overlong name to be rejected")
+	}
+	if _, key, err := store.CreateAgentKey(ctx, user.ID, "   "); err != nil || key.Name != "Agent" {
+		t.Fatalf("blank name defaults to Agent: %#v err=%v", key, err)
+	}
+	if _, err := store.CreateBootstrapToken(ctx, user.ID, "Bad<name>", 10*time.Minute); err == nil {
+		t.Fatal("expected bootstrap name validation to reject angle brackets")
 	}
 }
 

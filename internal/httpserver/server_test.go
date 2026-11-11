@@ -397,6 +397,59 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	}
 }
 
+func TestSettingsAgentKeyNameHintAndPlainName(t *testing.T) {
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, _ := store.UpsertGitHubUser(context.Background(), 6339, "hint", "", "")
+	token, session, err := store.CreateSession(context.Background(), user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{GitHubAppSlug: "raises"}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="agent-name-hint"`) {
+		t.Fatal("settings is missing the agent name format hint")
+	}
+	if strings.Contains(body, `id="agent-name" name="name" placeholder="e.g. Codex on my Mac"`) {
+		t.Fatal("settings still shows the stale placeholder without parentheses example")
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, `id="agent-name"`) && strings.Contains(line, "pattern=") {
+			t.Fatalf("agent name input must not carry a restrictive pattern: %s", strings.TrimSpace(line))
+		}
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=Superreception"))
+	create.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	create.Header.Set("Accept", "application/json")
+	create.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, create)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("plain name create=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=Bad%3Cname%3E"))
+	bad.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	bad.Header.Set("Accept", "application/json")
+	bad.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	badRec := httptest.NewRecorder()
+	handler.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "agent name is not valid") {
+		t.Fatalf("invalid name create=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+}
+
 func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	ctx := context.Background()
 	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)

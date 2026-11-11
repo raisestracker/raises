@@ -97,9 +97,10 @@
             <input type="hidden" name="csrf" value="{{.CSRF}}">
             <label class="mb-2 block text-sm font-semibold text-ink" for="agent-name">Name this agent</label>
             <div class="flex items-stretch gap-3 max-sm:flex-col">
-              <input class="min-w-0 flex-1 rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 text-ink placeholder:text-quiet" id="agent-name" name="name" placeholder="e.g. Codex on my Mac" maxlength="80" required>
+              <input class="min-w-0 flex-1 rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 text-ink placeholder:text-quiet" id="agent-name" name="name" placeholder="e.g. Claude Code (plonkboard)" maxlength="80" aria-describedby="agent-name-hint" required>
               <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light disabled:cursor-wait disabled:opacity-60 max-sm:w-full" type="submit">Create key</button>
             </div>
+            <p class="mt-2 text-[13px] leading-5 text-quiet" id="agent-name-hint">Letters, numbers, spaces, hyphens, underscores, periods, apostrophes and parentheses work — up to 80 characters.</p>
             <label class="mt-3 flex cursor-pointer items-start gap-2.5 text-sm leading-6 text-muted" for="agent-account-key">
               <input class="mt-1.5 shrink-0 accent-[#e5484d]" id="agent-account-key" type="checkbox" name="account_key" value="1">
               <span>Account key: can mint, list, and revoke agent keys via the API. Minted keys stay usable if this key is revoked.</span>
