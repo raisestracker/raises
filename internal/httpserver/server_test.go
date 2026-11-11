@@ -256,6 +256,74 @@ func TestBootstrapProjectAndIngestContract(t *testing.T) {
 	}
 }
 
+func TestAccountKeyAgentKeyAPI(t *testing.T) {
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, err := store.UpsertGitHubUser(context.Background(), 4242, "owner", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountToken, accountKey, err := store.CreateAccountKey(context.Background(), user.ID, "CI host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinaryToken, _, err := store.CreateAgentKey(context.Background(), user.ID, "ordinary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{}).Handler()
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	mint := call(http.MethodPost, "/v1/agent-keys", accountToken, `{"name":"SuperReception"}`)
+	if mint.Code != http.StatusCreated {
+		t.Fatalf("mint=%d %s", mint.Code, mint.Body.String())
+	}
+	var minted struct {
+		Token string         `json:"token"`
+		Key   inbox.AgentKey `json:"key"`
+	}
+	if err := json.Unmarshal(mint.Body.Bytes(), &minted); err != nil || minted.Token == "" || minted.Key.Name != "SuperReception" {
+		t.Fatalf("minted=%s err=%v", mint.Body.String(), err)
+	}
+	if minted.Key.MintedByKeyID == nil || *minted.Key.MintedByKeyID != accountKey.ID {
+		t.Fatalf("minted key is missing its audit trail: %s", mint.Body.String())
+	}
+
+	list := call(http.MethodGet, "/v1/agent-keys", accountToken, "")
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), minted.Key.ID) {
+		t.Fatalf("list=%d %s", list.Code, list.Body.String())
+	}
+
+	if rec := call(http.MethodPost, "/v1/agent-keys", ordinaryToken, `{"name":"nope"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("ordinary key mint=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(http.MethodGet, "/v1/agent-keys", ordinaryToken, ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("ordinary key list=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(http.MethodGet, "/v1/agent-keys", "nope", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token list=%d %s", rec.Code, rec.Body.String())
+	}
+
+	revoke := call(http.MethodDelete, "/v1/agent-keys/"+minted.Key.ID, accountToken, "")
+	if revoke.Code != http.StatusNoContent {
+		t.Fatalf("revoke=%d %s", revoke.Code, revoke.Body.String())
+	}
+	if rec := call(http.MethodDelete, "/v1/agent-keys/"+minted.Key.ID, accountToken, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("double revoke=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
 	if err != nil {
@@ -279,7 +347,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -306,6 +374,26 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	}
 	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil || created.Token == "" || created.Key.Name != "Codex" {
 		t.Fatalf("created=%#v err=%v body=%s", created, err, createRec.Body.String())
+	}
+	if created.Key.CanMint {
+		t.Fatalf("ordinary browser key must not mint: %#v", created.Key)
+	}
+
+	account := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=CI+host&account_key=1"))
+	account.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	account.Header.Set("Accept", "application/json")
+	account.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	accountRec := httptest.NewRecorder()
+	handler.ServeHTTP(accountRec, account)
+	if accountRec.Code != http.StatusCreated {
+		t.Fatalf("create account key=%d body=%s", accountRec.Code, accountRec.Body.String())
+	}
+	var accountCreated struct {
+		Token string         `json:"token"`
+		Key   inbox.AgentKey `json:"key"`
+	}
+	if err := json.Unmarshal(accountRec.Body.Bytes(), &accountCreated); err != nil || accountCreated.Token == "" || !accountCreated.Key.CanMint {
+		t.Fatalf("accountCreated=%#v err=%v body=%s", accountCreated, err, accountRec.Body.String())
 	}
 }
 

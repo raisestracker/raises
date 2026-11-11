@@ -14,6 +14,16 @@ All request and response bodies are JSON. Agent endpoints use `Authorization: Be
 
 Returns an account-scoped agent key once. Bootstrap credentials expire after ten minutes and cannot be reused.
 
+## Account keys
+
+Create one account key per automation host in the settings UI (tick "Account key"). Its token manages agent keys without another browser round-trip:
+
+- `POST /v1/agent-keys` with `{"name":"SuperReception prod"}` mints a new ordinary agent key. Returns `{"token":"raises_agent_…","key":{…}}`; the token is shown once.
+- `GET /v1/agent-keys` lists keys, including which account key minted each one (`minted_by_key_id`).
+- `DELETE /v1/agent-keys/:id` revokes a key.
+
+All three routes require an account key: ordinary agent keys get `403`, unknown tokens get `401`. Revoking an account key leaves the keys it minted usable. Minted keys count toward the same 100-key account limit.
+
 ## Projects
 
 - `GET /v1/projects?archived=1`

@@ -50,6 +50,23 @@ type AgentKey struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// CanMint marks an owner-level account key: it can mint, list, and revoke
+	// agent keys through POST/GET/DELETE /v1/agent-keys. Minted keys always
+	// have CanMint set to false.
+	CanMint bool `json:"can_mint"`
+	// MintedByKeyID is the account key that minted this key, if any. It is the
+	// audit trail from a minted key back to its account key. Revoking the
+	// account key leaves keys it minted usable.
+	MintedByKeyID *string `json:"minted_by_key_id,omitempty"`
+}
+
+// MintedBy renders the audit-trail key ID for HTML templates, which cannot
+// dereference MintedByKeyID themselves.
+func (k AgentKey) MintedBy() string {
+	if k.MintedByKeyID == nil {
+		return ""
+	}
+	return *k.MintedByKeyID
 }
 
 type Project struct {
@@ -198,6 +215,8 @@ func (s *Store) initializeControlPlane(ctx context.Context) error {
 			created_at_unix INTEGER NOT NULL,
 			last_used_at_unix INTEGER,
 			revoked_at_unix INTEGER,
+			can_mint INTEGER NOT NULL DEFAULT 0,
+			minted_by_key_id TEXT,
 			FOREIGN KEY(user_id) REFERENCES users(id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS bootstrap_tokens (
@@ -259,6 +278,26 @@ func (s *Store) initializeControlPlane(ctx context.Context) error {
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize control plane: %w", err)
+		}
+	}
+	return s.ensureAgentKeyColumns(ctx)
+}
+
+// ensureAgentKeyColumns migrates pre-existing agent_keys tables in place.
+func (s *Store) ensureAgentKeyColumns(ctx context.Context) error {
+	columns := map[string]string{
+		"can_mint":         "ALTER TABLE agent_keys ADD COLUMN can_mint INTEGER NOT NULL DEFAULT 0",
+		"minted_by_key_id": "ALTER TABLE agent_keys ADD COLUMN minted_by_key_id TEXT",
+	}
+	for column, statement := range columns {
+		exists, err := s.columnExists(ctx, "agent_keys", column)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("add agent_keys.%s: %w", column, err)
+			}
 		}
 	}
 	return nil
@@ -427,7 +466,7 @@ func (s *Store) ExchangeBootstrapToken(ctx context.Context, bootstrapToken, name
 	if len(strings.TrimSpace(name)) > maxAgentNameLength {
 		return "", AgentKey{}, fmt.Errorf("agent name is too long")
 	}
-	token, key, err := createAgentKeyTx(ctx, tx, userID, name, s.now().UTC())
+	token, key, err := createAgentKeyTx(ctx, tx, userID, name, false, "", s.now().UTC())
 	if err != nil {
 		return "", AgentKey{}, err
 	}
@@ -440,7 +479,7 @@ func (s *Store) ExchangeBootstrapToken(ctx context.Context, bootstrapToken, name
 	return token, key, nil
 }
 
-func createAgentKeyTx(ctx context.Context, tx *sql.Tx, userID int64, name string, now time.Time) (string, AgentKey, error) {
+func createAgentKeyTx(ctx context.Context, tx *sql.Tx, userID int64, name string, canMint bool, mintedBy string, now time.Time) (string, AgentKey, error) {
 	secret, err := randomID("", 32)
 	if err != nil {
 		return "", AgentKey{}, err
@@ -451,11 +490,30 @@ func createAgentKeyTx(ctx context.Context, tx *sql.Tx, userID int64, name string
 	}
 	prefix := secret[:8]
 	token := "raises_agent_" + prefix + "_" + secret[8:]
-	_, err = tx.ExecContext(ctx, `INSERT INTO agent_keys (id, user_id, name, prefix, token_hash, created_at_unix) VALUES (?, ?, ?, ?, ?, ?)`, id, userID, strings.TrimSpace(name), prefix, HashToken(token), now.Unix())
-	return token, AgentKey{ID: id, Name: strings.TrimSpace(name), Prefix: prefix, CreatedAt: now}, err
+	var mintedByValue any
+	if mintedBy != "" {
+		mintedByValue = mintedBy
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO agent_keys (id, user_id, name, prefix, token_hash, created_at_unix, can_mint, minted_by_key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, userID, strings.TrimSpace(name), prefix, HashToken(token), now.Unix(), boolToInt(canMint), mintedByValue)
+	key := AgentKey{ID: id, Name: strings.TrimSpace(name), Prefix: prefix, CreatedAt: now, CanMint: canMint}
+	if mintedBy != "" {
+		key.MintedByKeyID = &mintedBy
+	}
+	return token, key, err
 }
 
 func (s *Store) CreateAgentKey(ctx context.Context, userID int64, name string) (string, AgentKey, error) {
+	return s.createAccountScopedKey(ctx, userID, name, false, "")
+}
+
+// CreateAccountKey creates an owner-level account key in the settings UI. The
+// returned token authenticates GET/POST/DELETE /v1/agent-keys, which mint,
+// list, and revoke agent keys without another browser round-trip.
+func (s *Store) CreateAccountKey(ctx context.Context, userID int64, name string) (string, AgentKey, error) {
+	return s.createAccountScopedKey(ctx, userID, name, true, "")
+}
+
+func (s *Store) createAccountScopedKey(ctx context.Context, userID int64, name string, canMint bool, mintedBy string) (string, AgentKey, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", AgentKey{}, err
@@ -474,7 +532,62 @@ func (s *Store) CreateAgentKey(ctx context.Context, userID int64, name string) (
 	if len(strings.TrimSpace(name)) > maxAgentNameLength {
 		return "", AgentKey{}, fmt.Errorf("agent name is too long")
 	}
-	token, key, err := createAgentKeyTx(ctx, tx, userID, name, s.now().UTC())
+	token, key, err := createAgentKeyTx(ctx, tx, userID, name, canMint, mintedBy, s.now().UTC())
+	if err != nil {
+		return "", AgentKey{}, err
+	}
+	return token, key, tx.Commit()
+}
+
+// AuthenticateAccountKey resolves an owner-level account key token to its
+// account and key ID. Ordinary agent keys and unknown tokens return
+// ErrUnauthorized.
+func (s *Store) AuthenticateAccountKey(ctx context.Context, token string) (int64, string, error) {
+	var userID int64
+	var keyID string
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, id FROM agent_keys WHERE token_hash = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID, &keyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", ErrUnauthorized
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	return userID, keyID, nil
+}
+
+// MintAgentKey mints a new ordinary agent key under an account key. parentKeyID
+// must be an active account key for the same account; it is recorded on the
+// minted key as the audit trail. Revoking the account key later leaves keys it
+// minted usable.
+func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, name string) (string, AgentKey, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", AgentKey{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var parentOwner int64
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM agent_keys WHERE id = ? AND user_id = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, parentKeyID, userID).Scan(&parentOwner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", AgentKey{}, ErrUnauthorized
+	}
+	if err != nil {
+		return "", AgentKey{}, err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_keys WHERE user_id = ? AND revoked_at_unix IS NULL`, userID).Scan(&count); err != nil {
+		return "", AgentKey{}, err
+	}
+	if count >= MaxActiveAgentKeys {
+		return "", AgentKey{}, fmt.Errorf("agent key limit reached")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "Agent"
+	}
+	if len(strings.TrimSpace(name)) > maxAgentNameLength {
+		return "", AgentKey{}, fmt.Errorf("agent name is too long")
+	}
+	token, key, err := createAgentKeyTx(ctx, tx, userID, name, false, parentKeyID, s.now().UTC())
 	if err != nil {
 		return "", AgentKey{}, err
 	}
@@ -495,7 +608,7 @@ func (s *Store) AuthenticateAgent(ctx context.Context, token string) (int64, err
 }
 
 func (s *Store) ListAgentKeys(ctx context.Context, userID int64) ([]AgentKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, prefix, created_at_unix, last_used_at_unix, revoked_at_unix FROM agent_keys WHERE user_id = ? ORDER BY created_at_unix DESC`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, prefix, created_at_unix, last_used_at_unix, revoked_at_unix, can_mint, minted_by_key_id FROM agent_keys WHERE user_id = ? ORDER BY created_at_unix DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +618,9 @@ func (s *Store) ListAgentKeys(ctx context.Context, userID int64) ([]AgentKey, er
 		var k AgentKey
 		var created int64
 		var last, revoked sql.NullInt64
-		if err := rows.Scan(&k.ID, &k.Name, &k.Prefix, &created, &last, &revoked); err != nil {
+		var canMint int64
+		var mintedBy sql.NullString
+		if err := rows.Scan(&k.ID, &k.Name, &k.Prefix, &created, &last, &revoked, &canMint, &mintedBy); err != nil {
 			return nil, err
 		}
 		k.CreatedAt = time.Unix(created, 0).UTC()
@@ -516,6 +631,10 @@ func (s *Store) ListAgentKeys(ctx context.Context, userID int64) ([]AgentKey, er
 		if revoked.Valid {
 			t := time.Unix(revoked.Int64, 0).UTC()
 			k.RevokedAt = &t
+		}
+		k.CanMint = canMint != 0
+		if mintedBy.Valid {
+			k.MintedByKeyID = &mintedBy.String
 		}
 		keys = append(keys, k)
 	}
