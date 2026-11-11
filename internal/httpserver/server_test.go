@@ -348,7 +348,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `id="bootstrap-form"`, `id="bootstrap-result"`, `id="bootstrap-prompt"`, `id="copy-bootstrap-prompt"`, `id="copy-bootstrap-prompt-status"`, `id="bootstrap-form-status"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -380,8 +380,22 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 		t.Fatalf("ordinary browser key must not mint: %#v", created.Key)
 	}
 
-	account := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", strings.NewReader("csrf="+session.CSRFToken+"&name=CI+host&account_key=1"))
-	account.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	var accountBody bytes.Buffer
+	accountWriter := multipart.NewWriter(&accountBody)
+	if err := accountWriter.WriteField("csrf", session.CSRFToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountWriter.WriteField("name", "CI host"); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountWriter.WriteField("account_key", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	account := httptest.NewRequest(http.MethodPost, "/settings/agent-keys", &accountBody)
+	account.Header.Set("Content-Type", accountWriter.FormDataContentType())
 	account.Header.Set("Accept", "application/json")
 	account.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
 	accountRec := httptest.NewRecorder()
@@ -393,8 +407,48 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 		Token string         `json:"token"`
 		Key   inbox.AgentKey `json:"key"`
 	}
-	if err := json.Unmarshal(accountRec.Body.Bytes(), &accountCreated); err != nil || accountCreated.Token == "" || !accountCreated.Key.CanMint {
+	if err := json.Unmarshal(accountRec.Body.Bytes(), &accountCreated); err != nil || accountCreated.Token == "" || !accountCreated.Key.CanMint || accountCreated.Key.Name != "CI host" {
 		t.Fatalf("accountCreated=%#v err=%v body=%s", accountCreated, err, accountRec.Body.String())
+	}
+
+	// The settings page submits via fetch(FormData), i.e. multipart: the
+	// server must accept that encoding for both bootstrap and key creation.
+	var bootstrapBody bytes.Buffer
+	bootstrapWriter := multipart.NewWriter(&bootstrapBody)
+	if err := bootstrapWriter.WriteField("csrf", session.CSRFToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrapWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bootstrapCreate := httptest.NewRequest(http.MethodPost, "/settings/bootstrap", &bootstrapBody)
+	bootstrapCreate.Header.Set("Content-Type", bootstrapWriter.FormDataContentType())
+	bootstrapCreate.Header.Set("Accept", "application/json")
+	bootstrapCreate.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	bootstrapCreateRec := httptest.NewRecorder()
+	handler.ServeHTTP(bootstrapCreateRec, bootstrapCreate)
+	if bootstrapCreateRec.Code != http.StatusCreated || !strings.Contains(bootstrapCreateRec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("create bootstrap=%d content-type=%q body=%s", bootstrapCreateRec.Code, bootstrapCreateRec.Header().Get("Content-Type"), bootstrapCreateRec.Body.String())
+	}
+	var bootstrapCreated struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(bootstrapCreateRec.Body.Bytes(), &bootstrapCreated); err != nil || !strings.Contains(bootstrapCreated.Prompt, "bootstrap token") {
+		t.Fatalf("bootstrapCreated=%#v err=%v body=%s", bootstrapCreated, err, bootstrapCreateRec.Body.String())
+	}
+
+	bootstrapFallback := httptest.NewRequest(http.MethodPost, "/settings/bootstrap", strings.NewReader("csrf="+session.CSRFToken))
+	bootstrapFallback.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	bootstrapFallback.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	bootstrapFallbackRec := httptest.NewRecorder()
+	handler.ServeHTTP(bootstrapFallbackRec, bootstrapFallback)
+	if bootstrapFallbackRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap fallback=%d body=%s", bootstrapFallbackRec.Code, bootstrapFallbackRec.Body.String())
+	}
+	for _, want := range []string{`id="bootstrap-result"`, "Copy this prompt now", "Set up Raises for me", `id="copy-bootstrap-prompt"`} {
+		if !strings.Contains(bootstrapFallbackRec.Body.String(), want) {
+			t.Fatalf("bootstrap fallback missing %q", want)
+		}
 	}
 }
 

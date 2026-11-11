@@ -285,6 +285,10 @@ func (s *Server) createBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prompt := fmt.Sprintf("Set up Raises for me. Read %s/llms.txt and authenticate once with bootstrap token %s. Store the returned agent key securely and never print it again.", strings.TrimRight(s.config.BaseURL, "/"), token)
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, http.StatusCreated, map[string]any{"prompt": prompt})
+		return
+	}
 	s.renderSettingsRequest(w, r, session, prompt, "")
 }
 
