@@ -1,0 +1,58 @@
+{{define "head"}}
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/png" href="/app-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{.StylePath}}">
+{{end}}
+
+{{define "nav"}}
+      <header class="relative flex items-center justify-between gap-6 border-b border-line pb-5">
+        <div class="flex items-center gap-8">
+          <a class="flex items-center gap-3 text-xl font-bold tracking-tight text-ink no-underline" href="/dashboard">
+            <img class="size-8 object-contain" src="/app-icon.png" alt="">
+            <span>raises</span>
+          </a>
+          <nav class="flex items-center gap-1 max-md:hidden" aria-label="Main">
+            <a class="rounded-lg px-3 py-2 text-sm font-semibold no-underline transition-colors {{if eq .Active "dashboard"}}bg-raised text-ink{{else}}text-muted hover:text-ink{{end}}" href="/dashboard"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+            <a class="rounded-lg px-3 py-2 text-sm font-semibold no-underline transition-colors {{if eq .Active "settings"}}bg-raised text-ink{{else}}text-muted hover:text-ink{{end}}" href="/settings"{{if eq .Active "settings"}} aria-current="page"{{end}}>Settings</a>
+          </nav>
+        </div>
+        <div class="flex items-center gap-4 max-md:hidden">
+          <div class="flex items-center gap-2 text-sm font-semibold text-muted">
+            {{if .User.AvatarURL}}<img class="size-7 rounded-full ring-1 ring-line-strong" src="{{.User.AvatarURL}}" alt="">{{end}}
+            <span>@{{.User.Login}}</span>
+          </div>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <button class="cursor-pointer border-0 bg-transparent p-1 text-sm font-semibold text-muted hover:text-ink" type="submit">Sign out</button>
+          </form>
+        </div>
+        <details class="group md:hidden">
+          <summary class="flex size-11 cursor-pointer list-none items-center justify-center rounded-lg border border-line-strong bg-panel text-ink [&::-webkit-details-marker]:hidden" aria-label="Menu">
+            <svg class="size-5 group-open:hidden" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+            <svg class="hidden size-5 group-open:block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+          </summary>
+          <nav class="absolute right-0 top-full z-10 mt-2 w-56 rounded-xl border border-line-strong bg-panel p-2 shadow-panel" aria-label="Main">
+            <a class="block rounded-lg px-3 py-3 text-base font-semibold no-underline {{if eq .Active "dashboard"}}bg-raised text-ink{{else}}text-muted{{end}}" href="/dashboard"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+            <a class="block rounded-lg px-3 py-3 text-base font-semibold no-underline {{if eq .Active "settings"}}bg-raised text-ink{{else}}text-muted{{end}}" href="/settings"{{if eq .Active "settings"}} aria-current="page"{{end}}>Settings</a>
+            <form class="m-0 border-t border-line pt-2" method="post" action="/logout">
+              <input type="hidden" name="csrf" value="{{.CSRF}}">
+              <button class="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-3 py-3 text-left text-base font-semibold text-muted" type="submit">Sign out <span class="text-quiet">@{{.User.Login}}</span></button>
+            </form>
+          </nav>
+        </details>
+      </header>
+{{end}}
+
+{{define "statuspill"}}<span class="inline-flex items-center gap-1.5 text-xs font-semibold {{if eq . "open"}}text-ruby-light{{else if eq . "fixed"}}text-mint{{else}}text-muted{{end}}"><span class="size-2 rounded-full {{if eq . "open"}}bg-ruby{{else if eq . "fixed"}}bg-mint{{else}}border border-quiet{{end}}" aria-hidden="true"></span>{{if eq . "acknowledged"}}Acknowledged{{else if eq . "open"}}Open{{else if eq . "fixed"}}Fixed{{else}}Suppressed{{end}}</span>{{end}}
+
+{{define "footer"}}
+      <footer class="mt-14 text-xs text-quiet">
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises">GitHub</a>
+        <span aria-hidden="true">·</span>
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
+      </footer>
+{{end}}

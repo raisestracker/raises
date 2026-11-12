@@ -11,7 +11,7 @@ func (s *Store) ListForUser(ctx context.Context, userID int64, project string, u
 	query := `
 		SELECT g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.sample_json
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id
 		WHERE a.owner_user_id = ?
 	`
@@ -44,7 +44,7 @@ func (s *Store) GetForUser(ctx context.Context, userID, id int64) (Group, error)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.sample_json
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id
 		WHERE a.owner_user_id = ? AND g.id = ?
 	`, userID, id)

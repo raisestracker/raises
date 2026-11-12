@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>{{.Title}} — raises</title>
+    {{template "head" .}}
+  </head>
+  <body>
+    <main class="mx-auto mb-16 mt-8 w-full max-w-6xl px-6 max-sm:mt-4 max-sm:px-4">
+      {{template "nav" .Nav}}
+
+      <div class="mt-8">
+        <p class="mb-3 text-sm text-muted"><a class="font-semibold text-muted no-underline hover:text-ink" href="/dashboard">‹ Dashboard</a>{{if .Project}} <span class="text-quiet">/</span> {{.Project.Name}}{{end}}</p>
+        <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <h1 class="m-0 text-3xl font-bold tracking-tight max-sm:text-2xl">{{.Title}}</h1>
+          <p class="m-0 text-sm text-muted">{{if .Project}}{{if .Project.GitHubRepo}}{{.Project.GitHubRepo}} · {{end}}{{end}}<span class="font-semibold {{if .Open}}text-ruby-light{{end}}">{{.Open}} open</span> · {{.Fixed}} fixed</p>
+        </div>
+      </div>
+
+      <nav class="mt-6 flex flex-wrap gap-2" aria-label="Filter by status">
+        {{range .Filters}}
+        <a class="rounded-full px-4 py-2 text-sm font-semibold no-underline transition-colors {{if .Active}}bg-ink text-canvas{{else}}bg-panel text-muted hover:text-ink{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+        {{end}}
+      </nav>
+
+      {{if .Page.Groups}}
+      <ul class="mt-4 list-none divide-y divide-line p-0">
+        {{range .Page.Groups}}
+        <li>
+          <a class="grid grid-cols-[minmax(0,1fr)_auto_6rem_auto] items-center gap-x-5 px-1 py-3.5 no-underline hover:bg-panel max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-y-1" href="/errors/{{.ID}}">
+            <span class="min-w-0">
+              <span class="block truncate font-semibold text-ink">{{.Class}}<span class="font-normal text-muted"> {{.Message}}</span></span>
+              <span class="block truncate font-mono text-[12px] text-quiet">{{if $.ShowApp}}{{.App}} · {{end}}{{.Location}}</span>
+            </span>
+            <span class="text-sm text-muted tabular-nums max-sm:hidden">seen {{.Count}}×</span>
+            <span class="text-sm text-muted max-sm:hidden">{{ago .LastSeen}}</span>
+            {{template "statuspill" .Status}}
+          </a>
+        </li>
+        {{end}}
+      </ul>
+      {{if gt .Page.Pages 1}}
+      <nav class="mt-8 flex items-center justify-center gap-6 text-sm" aria-label="Pagination">
+        {{if .Prev}}<a class="font-semibold text-ink no-underline" href="{{.Prev}}" rel="prev">‹ Prev</a>{{else}}<span class="text-quiet" aria-disabled="true">‹ Prev</span>{{end}}
+        <span class="text-muted">Page {{.Page.Page}} of {{.Page.Pages}}</span>
+        {{if .Next}}<a class="font-semibold text-ink no-underline" href="{{.Next}}" rel="next">Next ›</a>{{else}}<span class="text-quiet" aria-disabled="true">Next ›</span>{{end}}
+      </nav>
+      {{end}}
+      {{else}}
+      <p class="mt-6 rounded-xl border border-dashed border-line-strong p-6 text-muted">{{.Empty}}</p>
+      {{end}}
+      {{template "footer"}}
+    </main>
+  </body>
+</html>

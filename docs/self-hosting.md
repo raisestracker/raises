@@ -29,7 +29,7 @@ For a server at `https://raises.example.com`, set these GitHub App URLs:
 - Setup: `https://raises.example.com/github/setup`
 - Webhook: `https://raises.example.com/webhooks/github`
 
-Grant **Metadata: read** and **Issues: read and write** permissions. Subscribe to **Installation** and **Installation repositories** events. Transport the private key as base64 text when an environment variable cannot preserve newlines; Raises accepts either PEM or base64-encoded PEM.
+Grant **Metadata: read** and **Issues: read and write** permissions. Subscribe to **Installation**, **Installation repositories** and **Issues** events. The Issues subscription marks an error fixed when its GitHub issue is closed. Transport the private key as base64 text when an environment variable cannot preserve newlines; Raises accepts either PEM or base64-encoded PEM.
 
 ## Backup and upgrade
 

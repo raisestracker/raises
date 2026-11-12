@@ -27,6 +27,8 @@ An owner-level account key (created once in the settings UI) mints further agent
 
 Read the group and recent notices through the API, inspect the referenced application code, reproduce and fix the failure, run relevant tests, open a draft pull request referencing the group's GitHub issue URL, then acknowledge with `POST /v1/errors/:id/ack`. Do not close the GitHub issue manually and do not paste backtraces into prompts when the API is available.
 
+List errors by state with `GET /v1/errors?app=<project-slug>&status=open|acknowledged|fixed|all&page=1` (response: `errors`, `page`, `pages`, `total`). An error becomes `fixed` when its GitHub issue is closed and returns to `acknowledged` if the issue is reopened; a recurrence in a new revision reopens it.
+
 Suppress a known false positive with `POST /v1/errors/:id/suppress`. Suppression is store-only for that exact group: Raises keeps notices and increments counts, but future recurrences do not clear acknowledgement, do not enqueue webhooks or ntfy, and do not open or reopen GitHub issues. The group disappears from `unacked=1` listings without deleting evidence. Restore normal behavior for future occurrences with `POST /v1/errors/:id/unsuppress`; unsuppress never retroactively delivers missed notifications or changes an existing GitHub issue.
 
 Full skill: https://raises.dev/skill.md
