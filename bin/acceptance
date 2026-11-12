@@ -38,7 +38,7 @@ fi
 
 mkdir -p .bin
 if [[ -z "$runtime" ]]; then
-  CGO_ENABLED=0 go build -o .bin/raises-acceptance ../cmd/raises-acceptance
+  CGO_ENABLED=0 go build -buildvcs=false -o .bin/raises-acceptance ../cmd/raises-acceptance
   RAISES_ACCEPTANCE_BIN=.bin/raises-acceptance exec npx playwright test "$@"
 fi
 
@@ -47,7 +47,7 @@ case "$(uname -m)" in
   arm64 | aarch64) goarch=arm64 ;;
   *) printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
 esac
-(cd .. && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -o acceptance/.bin/raises-acceptance-linux ./cmd/raises-acceptance)
+(cd .. && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -buildvcs=false -o acceptance/.bin/raises-acceptance-linux ./cmd/raises-acceptance)
 
 run_flags=(--rm --ipc=host)
 [[ -t 1 ]] && run_flags+=(-t)

@@ -8,7 +8,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 const binary = process.env.RAISES_ACCEPTANCE_BIN || ".bin/raises-acceptance";
 const build = process.env.RAISES_ACCEPTANCE_BIN
   ? ""
-  : `(cd .. && CGO_ENABLED=0 go build -o acceptance/.bin/raises-acceptance ./cmd/raises-acceptance) && `;
+  : `(cd .. && CGO_ENABLED=0 go build -buildvcs=false -o acceptance/.bin/raises-acceptance ./cmd/raises-acceptance) && `;
 
 export default defineConfig({
   testDir: "tests",
