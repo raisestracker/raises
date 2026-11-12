@@ -256,7 +256,7 @@ func (s *Store) DashboardForUser(ctx context.Context, userID int64) (DashboardSt
 	rows, err = s.db.QueryContext(ctx, `
 		SELECT b.project_id, b.hour_start_unix, b.occurrences
 		FROM error_occurrence_buckets b JOIN apps a ON a.project_id = b.project_id
-		WHERE a.owner_user_id = ? AND b.hour_start_unix >= ?`, userID, windowStart)
+		WHERE a.owner_user_id = ? AND a.archived_at_unix IS NULL AND b.hour_start_unix >= ?`, userID, windowStart)
 	if err != nil {
 		return stats, err
 	}

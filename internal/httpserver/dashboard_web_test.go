@@ -124,6 +124,26 @@ func TestDashboardShowsKPIsAndProjects(t *testing.T) {
 	}
 }
 
+func TestDashboardExcludesArchivedProjects(t *testing.T) {
+	f := newDashFixture(t)
+	f.ingest(t, 2)
+	ctx := context.Background()
+	project, err := f.store.ProjectBySlug(ctx, 1, "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.SetProjectArchived(ctx, 1, project.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := f.store.DashboardForUser(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Open != 0 || stats.Events24h != 0 || stats.EventsSpark[inbox.SparkDays-1] != 0 {
+		t.Fatalf("archived project leaked into stats: %+v", stats)
+	}
+}
+
 func TestProjectPageStatusFilterAndPagination(t *testing.T) {
 	f := newDashFixture(t)
 	groups := f.ingest(t, 30)
