@@ -190,6 +190,165 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 	return err
 }
 
+// ensureTenantIsolatedGroups re-keys error grouping from the per-owner slug
+// (app_name) to the immutable project identity (project_id). Slugs are only
+// unique per owner, so two unrelated owners sharing a slug used to read and
+// mutate each other's error groups through one UNIQUE(app_name, env,
+// fingerprint) row. Grouping, and every side effect derived from it (notices,
+// acknowledgements, issue jobs, outbound events), now keys on project_id.
+//
+// Pre-fix rows without a project keep their data but are never reassigned:
+// when exactly one live project uses the row's slug the row is linked to it,
+// otherwise the row keeps its empty project_id — invisible to tenant-scoped
+// reads and unreachable by ingestion — so mixed-tenant history needs an explicit
+// owner-authorized recovery decision instead of a guessed owner.
+func (s *Store) ensureTenantIsolatedGroups(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups SET project_id = (
+			SELECT a.project_id FROM apps a
+			WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
+		) WHERE project_id = '' AND (
+			SELECT COUNT(*) FROM apps a
+			WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
+		) = 1
+	`); err != nil {
+		return fmt.Errorf("resolve legacy group projects: %w", err)
+	}
+	keyedBySlug, err := s.errorGroupsKeyedBySlug(ctx)
+	if err != nil {
+		return err
+	}
+	if keyedBySlug {
+		if err := s.rebuildErrorGroupsKeyedByProject(ctx); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_error_groups_project_env_fp ON error_groups(project_id, env, fingerprint) WHERE project_id != ''`)
+	if err != nil {
+		return fmt.Errorf("index error groups by project: %w", err)
+	}
+	return nil
+}
+
+// errorGroupsKeyedBySlug reports whether any unique index still pins error
+// groups to the slug-scoped (app_name, env, fingerprint) key.
+func (s *Store) errorGroupsKeyedBySlug(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA index_list(error_groups)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var seq int
+		var name, origin string
+		var unique, partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		if unique != 0 {
+			names = append(names, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, name := range names {
+		cols, err := s.indexColumns(ctx, "error_groups", name)
+		if err != nil {
+			return false, err
+		}
+		if sameStringSet(cols, []string{"app_name", "env", "fingerprint"}) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) indexColumns(ctx context.Context, table, index string) ([]string, error) {
+	// PRAGMA index_info takes the index name as its argument; table is only
+	// carried for the error message.
+	rows, err := s.db.QueryContext(ctx, `PRAGMA index_info(`+index+`)`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s.%s: %w", table, index, err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var seqno, cid int
+		var name string
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	return cols, rows.Err()
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, v := range a {
+		seen[v]++
+	}
+	for _, v := range b {
+		seen[v]--
+		if seen[v] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildErrorGroupsKeyedByProject recreates error_groups without the
+// slug-scoped unique key. SQLite cannot drop a UNIQUE constraint in place,
+// and the old key would keep rejecting one tenant's insert into another
+// tenant's slug. Row ids and every column value carry over untouched.
+func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	columns := `id, project_id, app_name, env, fingerprint, class, location, message, count,
+		first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
+		acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json`
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE error_groups_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL DEFAULT '',
+		app_name TEXT NOT NULL,
+		env TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		class TEXT NOT NULL,
+		location TEXT NOT NULL,
+		message TEXT NOT NULL,
+		count INTEGER NOT NULL,
+		first_seen_unix INTEGER NOT NULL,
+		last_seen_unix INTEGER NOT NULL,
+		last_revision TEXT NOT NULL DEFAULT '',
+		github_issue_number INTEGER NOT NULL DEFAULT 0,
+		github_issue_url TEXT NOT NULL DEFAULT '',
+		acked_at_unix INTEGER,
+		suppressed_at_unix INTEGER,
+		resolved_at_unix INTEGER,
+		sample_json TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("stage tenant-scoped groups: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO error_groups_new (`+columns+`) SELECT `+columns+` FROM error_groups`); err != nil {
+		return fmt.Errorf("carry groups across tenant rebuild: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE error_groups`); err != nil {
+		return fmt.Errorf("drop slug-keyed groups: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE error_groups_new RENAME TO error_groups`); err != nil {
+		return fmt.Errorf("publish tenant-scoped groups: %w", err)
+	}
+	return tx.Commit()
+}
+
 func (s *Store) columnExists(ctx context.Context, table, column string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {

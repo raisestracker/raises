@@ -25,7 +25,6 @@ import (
 type Store interface {
 	Ping(context.Context) error
 	Ingest(context.Context, string, inbox.Notice) (inbox.IngestResult, error)
-	List(context.Context, string, bool) ([]inbox.Group, error)
 	Get(context.Context, int64) (inbox.Group, error)
 	Notices(context.Context, int64, int) ([]inbox.Notice, error)
 	Ack(context.Context, int64) (inbox.Group, error)
