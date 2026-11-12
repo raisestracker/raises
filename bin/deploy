@@ -37,28 +37,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-section "Tailwind CSS build and dependency audit"
-npm ci --ignore-scripts
-npm run build:css
-npm audit --audit-level=high
-# Keep Go module discovery out of generated frontend dependencies.
-printf 'module raises.local/frontend\n\ngo 1.18\n' > node_modules/go.mod
-
-section "Go formatting and lint checks"
-unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
-if [[ -n "$unformatted" ]]; then
-  printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
-  exit 1
-fi
-go vet ./...
-
-section "Go tests"
-go test -race ./...
-
-section "Go dependency and vulnerability checks"
-go mod verify
-go mod tidy -diff
-go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+bin/check
 
 if [[ -n "$(git status --porcelain)" ]]; then
   printf 'Checks changed the working tree; review before deploying.\n' >&2
@@ -74,17 +53,6 @@ if ! git merge-base --is-ancestor origin/master HEAD; then
 fi
 git push origin master
 
-section "Deploying"
-kamal deploy
-
-section "Production smoke tests"
-if [[ -z "${KAMAL_BASE_URL:-}" ]]; then
-  printf 'KAMAL_BASE_URL must be set in .kamal/deploy.env or the environment.\n' >&2
-  exit 1
-fi
-curl --fail --silent --show-error "${KAMAL_BASE_URL%/}/healthz"
-printf '\n'
-curl --fail --silent --show-error "${KAMAL_BASE_URL%/}/readyz"
-printf '\n'
+bin/release
 
 section "Deploy complete"
