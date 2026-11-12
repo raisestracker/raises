@@ -107,19 +107,22 @@ func run(logger *slog.Logger) error {
 	}
 
 	ctx := context.Background()
-	legacyOwnerID, err := resolveLegacyOwner(ctx, store, conf.initialOwnerGitHubID, conf.ntfyEnabled)
-	if err != nil {
-		return err
-	}
-	store.ConfigureUnlimitedProjects(legacyOwnerID)
+	// Upsert legacy apps before owner resolution so AssignLegacyProjects
+	// attaches freshly configured APP_* rows to the owner instead of
+	// leaving them at owner 0 where per-owner cleanup could not reach them.
 	for _, app := range conf.apps {
 		if err := store.UpsertApp(ctx, app.name, app.token, app.repo); err != nil {
 			return err
 		}
 		logger.Info("configured app", "app", app.name, "repo", app.repo)
 	}
-	if conf.disableLegacyTokens && legacyOwnerID > 0 {
-		if err := store.ClearLegacyTokens(ctx, legacyOwnerID); err != nil {
+	legacyOwnerID, err := resolveLegacyOwner(ctx, store, conf.initialOwnerGitHubID, conf.ntfyEnabled)
+	if err != nil {
+		return err
+	}
+	store.ConfigureUnlimitedProjects(legacyOwnerID)
+	if conf.disableLegacyTokens {
+		if err := store.ClearAllLegacyTokens(ctx); err != nil {
 			return err
 		}
 	}
@@ -272,8 +275,14 @@ func run(logger *slog.Logger) error {
 		logger.Info("report delivery enabled", "timezone", conf.reportTimezone, "send_at", fmt.Sprintf("%02d:%02d", conf.reportSendHour, conf.reportSendMinute))
 	}
 
+	// With retirement enabled the legacy static agent token is never passed
+	// to the server, so agent routes accept only DB-backed agent keys.
+	agentToken := conf.agentToken
+	if conf.disableLegacyTokens {
+		agentToken = ""
+	}
 	server := httpserver.NewWithConfig(store, logger, conf.bodyLimit, httpserver.Config{
-		LegacyAgentToken:     conf.agentToken,
+		LegacyAgentToken:     agentToken,
 		LegacyOwnerID:        legacyOwnerID,
 		InitialOwnerGitHubID: conf.initialOwnerGitHubID,
 		BaseURL:              conf.baseURL,
