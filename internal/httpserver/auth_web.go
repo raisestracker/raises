@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/raisestracker/raises/internal/github"
 	"github.com/raisestracker/raises/internal/inbox"
-	"github.com/raisestracker/raises/web"
 )
 
 const sessionCookie = "raises_session"
@@ -33,7 +31,7 @@ type settingsData struct {
 	NewAgentToken   string
 	Delivery        settingsDeliveryHealth
 	Webhook         inbox.WebhookDeliveryHealth
-	RecentErrors    []inbox.Group
+	Nav             navData
 }
 
 type settingsDeliveryHealth struct {
@@ -51,6 +49,7 @@ type settingsInstallation struct {
 }
 
 type errorDetailData struct {
+	Nav       navData
 	User      inbox.User
 	CSRF      string
 	StylePath string
@@ -130,7 +129,7 @@ func (s *Server) finishGitHubAuth(w http.ResponseWriter, r *http.Request) {
 	s.clearCookie(w, "raises_oauth_verifier")
 	s.clearCookie(w, "raises_oauth_purpose")
 	s.clearCookie(w, "raises_pending_installation")
-	http.Redirect(w, r, "/settings", http.StatusFound)
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 func (s *Server) finishInstallation(r *http.Request, userToken string, userID int64) error {
@@ -236,14 +235,6 @@ func (s *Server) renderSettingsRequest(w http.ResponseWriter, r *http.Request, s
 		http.Error(w, "could not load webhook delivery health", 500)
 		return
 	}
-	recentErrors, err := s.store.ListForUser(r.Context(), session.User.ID, "", false)
-	if err != nil {
-		http.Error(w, "could not load recent errors", 500)
-		return
-	}
-	if len(recentErrors) > 5 {
-		recentErrors = recentErrors[:5]
-	}
 	installationViews := make([]settingsInstallation, 0, len(installations))
 	for _, installation := range installations {
 		view := settingsInstallation{
@@ -257,21 +248,8 @@ func (s *Server) renderSettingsRequest(w http.ResponseWriter, r *http.Request, s
 		}
 		installationViews = append(installationViews, view)
 	}
-	body, err := web.FS.ReadFile("settings.html")
-	if err != nil {
-		http.Error(w, "missing settings template", 500)
-		return
-	}
-	tmpl, err := template.New("settings").Parse(string(body))
-	if err != nil {
-		http.Error(w, "invalid settings template", 500)
-		return
-	}
-	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, RecentErrors: recentErrors}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, data); err != nil {
-		s.logger.Error("render settings", "error", err)
-	}
+	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, Nav: s.nav(session, "settings")}
+	s.renderPage(w, "settings.html", data)
 }
 
 func (s *Server) createBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -383,21 +361,8 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load notices", 500)
 		return
 	}
-	body, err := web.FS.ReadFile("error.html")
-	if err != nil {
-		http.Error(w, "missing error template", 500)
-		return
-	}
-	tmpl, err := template.New("error").Parse(string(body))
-	if err != nil {
-		http.Error(w, "invalid error template", 500)
-		return
-	}
-	data := errorDetailData{User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, Group: group, Notices: notices}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, data); err != nil {
-		s.logger.Error("render error detail", "error", err)
-	}
+	data := errorDetailData{Nav: s.nav(session, "dashboard"), User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, Group: group, Notices: notices}
+	s.renderPage(w, "error.html", data)
 }
 
 func (s *Server) browserSuppressError(w http.ResponseWriter, r *http.Request) {
@@ -548,13 +513,32 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		Installation struct {
 			ID int64 `json:"id"`
 		} `json:"installation"`
+		Issue struct {
+			Number int `json:"number"`
+		} `json:"issue"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "invalid json", 400)
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
-	if event == "installation" && (payload.Action == "deleted" || payload.Action == "suspend") {
+	if event == "issues" && (payload.Action == "closed" || payload.Action == "reopened") {
+		// A closed GitHub issue means the error was fixed; reopening undoes it.
+		var err error
+		if payload.Action == "closed" {
+			_, err = s.store.ResolveByIssue(r.Context(), payload.Repository.FullName, payload.Issue.Number)
+		} else {
+			_, err = s.store.ReopenByIssue(r.Context(), payload.Repository.FullName, payload.Issue.Number)
+		}
+		if err != nil {
+			s.logger.Error("apply github issue state", "error", err)
+			http.Error(w, "could not apply issue state", 500)
+			return
+		}
+	} else if event == "installation" && (payload.Action == "deleted" || payload.Action == "suspend") {
 		status := "deleted"
 		if payload.Action == "suspend" {
 			status = "suspended"

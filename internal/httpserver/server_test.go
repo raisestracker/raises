@@ -348,7 +348,7 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/settings" aria-label="Raises dashboard"`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `id="bootstrap-form"`, `id="bootstrap-result"`, `id="bootstrap-prompt"`, `id="copy-bootstrap-prompt"`, `id="copy-bootstrap-prompt-status"`, `id="bootstrap-form-status"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/dashboard"`, `aria-current="page">Settings`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `id="bootstrap-form"`, `id="bootstrap-result"`, `id="bootstrap-prompt"`, `id="copy-bootstrap-prompt"`, `id="copy-bootstrap-prompt-status"`, `id="bootstrap-form-status"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -623,7 +623,7 @@ func TestCreateBrowserAgentKeyMultipartFormData(t *testing.T) {
 	}
 }
 
-func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
+func TestDashboardLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	ctx := context.Background()
 	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
 	if err != nil {
@@ -657,9 +657,19 @@ func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	if settingsRec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", settingsRec.Code, settingsRec.Body.String())
 	}
+	if strings.Contains(settingsRec.Body.String(), "Recent errors") {
+		t.Fatal("settings must not list recent errors; they live on the dashboard")
+	}
+	dash := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	dash.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionToken})
+	dashRec := httptest.NewRecorder()
+	handler.ServeHTTP(dashRec, dash)
+	if dashRec.Code != http.StatusOK {
+		t.Fatalf("dashboard=%d %s", dashRec.Code, dashRec.Body.String())
+	}
 	for _, want := range []string{`href="/errors/1"`, "RuntimeError", "Suppressed", "Recent errors"} {
-		if !strings.Contains(settingsRec.Body.String(), want) {
-			t.Fatalf("settings missing %q", want)
+		if !strings.Contains(dashRec.Body.String(), want) {
+			t.Fatalf("dashboard missing %q", want)
 		}
 	}
 
@@ -670,7 +680,7 @@ func TestSettingsLinksRecentErrorsAndShowsSuppressedState(t *testing.T) {
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail=%d %s", detailRec.Code, detailRec.Body.String())
 	}
-	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", `href="/settings" aria-label="Raises dashboard"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Suppressed", `action="/errors/1/unsuppress"`, "Restore notifications", `href="/dashboard"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(detailRec.Body.String(), want) {
 			t.Fatalf("detail missing %q", want)
 		}

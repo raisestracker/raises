@@ -63,6 +63,8 @@ type Group struct {
 	GitHubIssueURL    string     `json:"github_issue_url,omitempty"`
 	AckedAt           *time.Time `json:"acked_at,omitempty"`
 	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
+	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	Status            string     `json:"status"`
 	Sample            Notice     `json:"sample"`
 }
 
@@ -181,6 +183,7 @@ func (s *Store) initialize(ctx context.Context) error {
 			github_issue_url TEXT NOT NULL DEFAULT '',
 			acked_at_unix INTEGER,
 			suppressed_at_unix INTEGER,
+			resolved_at_unix INTEGER,
 			sample_json TEXT NOT NULL,
 			UNIQUE(app_name, env, fingerprint)
 		)`,
@@ -295,17 +298,18 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		group          Group
 		ackedUnix      sql.NullInt64
 		suppressedUnix sql.NullInt64
+		resolvedUnix   sql.NullInt64
 		sampleRaw      string
 	)
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
 		FROM error_groups WHERE app_name = ? AND env = ? AND fingerprint = ?
 	`, app.Name, notice.Env, fp).Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
-		&ackedUnix, &suppressedUnix, &sampleRaw,
+		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
 	)
 
 	created := errors.Is(err, sql.ErrNoRows)
@@ -321,6 +325,10 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		if suppressedUnix.Valid {
 			t := time.Unix(suppressedUnix.Int64, 0).UTC()
 			group.SuppressedAt = &t
+		}
+		if resolvedUnix.Valid {
+			t := time.Unix(resolvedUnix.Int64, 0).UTC()
+			group.ResolvedAt = &t
 		}
 	}
 	if created && app.OwnerUserID > 0 {
@@ -375,13 +383,15 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		group.Message = notice.Message
 		if regressed {
 			group.AckedAt = nil
+			group.ResolvedAt = nil
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE error_groups
 			SET count = ?, last_seen_unix = ?, last_revision = ?, message = ?,
-			    acked_at_unix = CASE WHEN ? THEN NULL ELSE acked_at_unix END
+			    acked_at_unix = CASE WHEN ? THEN NULL ELSE acked_at_unix END,
+			    resolved_at_unix = CASE WHEN ? THEN NULL ELSE resolved_at_unix END
 			WHERE id = ?
-		`, group.Count, nowUnix, notice.Revision, notice.Message, boolToInt(regressed), group.ID)
+		`, group.Count, nowUnix, notice.Revision, notice.Message, boolToInt(regressed), boolToInt(regressed), group.ID)
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -448,6 +458,7 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		}
 	}
 
+	group.Status = group.ComputeStatus()
 	return IngestResult{Group: group, Created: created, Regressed: regressed}, nil
 }
 
@@ -455,7 +466,7 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 	query := `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
 		FROM error_groups
 	`
 	args := []any{}
@@ -491,7 +502,7 @@ func (s *Store) Get(ctx context.Context, id int64) (Group, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
 		FROM error_groups WHERE id = ?
 	`, id)
 	group, err := scanGroup(row)
@@ -577,12 +588,13 @@ func scanGroup(row rowScanner) (Group, error) {
 		group          Group
 		ackedUnix      sql.NullInt64
 		suppressedUnix sql.NullInt64
+		resolvedUnix   sql.NullInt64
 		sampleRaw      string
 	)
 	err := row.Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
-		&ackedUnix, &suppressedUnix, &sampleRaw,
+		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
 	)
 	if err != nil {
 		return Group{}, err
@@ -596,6 +608,11 @@ func scanGroup(row rowScanner) (Group, error) {
 		t := time.Unix(suppressedUnix.Int64, 0).UTC()
 		group.SuppressedAt = &t
 	}
+	if resolvedUnix.Valid {
+		t := time.Unix(resolvedUnix.Int64, 0).UTC()
+		group.ResolvedAt = &t
+	}
+	group.Status = group.ComputeStatus()
 	return group, nil
 }
 

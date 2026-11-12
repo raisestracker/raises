@@ -51,6 +51,12 @@ type Store interface {
 	CreateProjectToken(context.Context, int64, string) (string, inbox.ProjectToken, error)
 	RevokeProjectToken(context.Context, int64, string, string) error
 	ListForUser(context.Context, int64, string, bool) ([]inbox.Group, error)
+	ListPageForUser(context.Context, int64, string, string, int, int) (inbox.ErrorPage, error)
+	DashboardForUser(context.Context, int64) (inbox.DashboardStats, error)
+	ProjectBySlug(context.Context, int64, string) (inbox.Project, error)
+	ProjectCounts(context.Context, string) (int, int, int, error)
+	ResolveByIssue(context.Context, string, int) (int, error)
+	ReopenByIssue(context.Context, string, int) (int, error)
 	GetForUser(context.Context, int64, int64) (inbox.Group, error)
 	NoticesForUser(context.Context, int64, int64, int) ([]inbox.Notice, error)
 	AckForUser(context.Context, int64, int64) (inbox.Group, error)
@@ -187,6 +193,9 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /auth/github", s.beginGitHubAuth)
 	mux.HandleFunc("GET /auth/github/callback", s.finishGitHubAuth)
 	mux.HandleFunc("GET /settings", s.settings)
+	mux.HandleFunc("GET /dashboard", s.dashboard)
+	mux.HandleFunc("GET /projects/{slug}", s.projectPage)
+	mux.HandleFunc("GET /errors", s.allErrorsPage)
 	mux.HandleFunc("GET /errors/{id}", s.errorDetail)
 	mux.HandleFunc("POST /errors/{id}/suppress", s.browserSuppressError)
 	mux.HandleFunc("POST /errors/{id}/unsuppress", s.browserUnsuppressError)
@@ -213,6 +222,10 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	if prefersMarkdown(r.Header.Values("Accept")) {
 		s.serveTextAsset(w, "index.md", "text/markdown; charset=utf-8")
+		return
+	}
+	if _, signedIn := s.optionalSession(r); signedIn {
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
 	body, err := web.FS.ReadFile("index.html")
@@ -422,6 +435,23 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.agentUser(w, r)
 	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	if query.Has("status") || query.Has("page") || query.Has("per_page") {
+		status := inbox.NormalizeStatus(query.Get("status"), inbox.StatusAll)
+		if raw := query.Get("status"); raw != "" && status == inbox.StatusAll && !strings.EqualFold(raw, "all") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be open, acknowledged, fixed or all"})
+			return
+		}
+		page, _ := strconv.Atoi(query.Get("page"))
+		perPage, _ := strconv.Atoi(query.Get("per_page"))
+		result, err := s.store.ListPageForUser(r.Context(), userID, query.Get("app"), status, page, perPage)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list errors"})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 		return
 	}
 	unacked := r.URL.Query().Get("unacked") == "1" || r.URL.Query().Get("unacked") == "true"

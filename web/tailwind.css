@@ -1,5 +1,6 @@
 @import "tailwindcss" source(none);
 @source "./*.html";
+@source "../internal/httpserver/dashboard_web.go";
 
 @theme {
   --font-sans: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;

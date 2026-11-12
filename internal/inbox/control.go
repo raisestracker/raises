@@ -148,6 +148,7 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 		"apps.updated_at_unix":            "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
 		"error_groups.project_id":         "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
 		"error_groups.suppressed_at_unix": "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
+		"error_groups.resolved_at_unix":   "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
 	}
 	for key, statement := range columns {
 		parts := strings.SplitN(key, ".", 2)

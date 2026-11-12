@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Dashboard — raises</title>
+    {{template "head" .}}
+  </head>
+  <body>
+    <main class="mx-auto mb-16 mt-8 w-full max-w-6xl px-6 max-sm:mt-4 max-sm:px-4">
+      {{template "nav" .Nav}}
+
+      <h1 class="sr-only">Dashboard</h1>
+      <section class="mt-8 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:gap-3" aria-label="Summary">
+        {{template "tile" (tile .Stats.Open "open errors" .Stats.OpenSpark "ruby")}}
+        {{template "tile" (tile .Stats.NewToday "new today" .Stats.NewSpark "ruby")}}
+        {{template "tile" (tile .Stats.Events24h "events / 24h" .Stats.EventsSpark "ink")}}
+        {{template "tile" (tile .Stats.Fixed7d "fixed / 7d" .Stats.FixedSpark "mint")}}
+      </section>
+
+      <section class="mt-12" aria-labelledby="recent-heading">
+        <div class="mb-3 flex items-baseline justify-between">
+          <h2 class="text-lg font-bold tracking-tight" id="recent-heading">Recent errors</h2>
+          {{if .Recent}}<a class="text-sm font-semibold text-muted no-underline hover:text-ink" href="/errors">View all</a>{{end}}
+        </div>
+        {{if .Recent}}
+        <ul class="m-0 list-none divide-y divide-line p-0">
+          {{range .Recent}}
+          <li>
+            <a class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-1 py-3.5 no-underline hover:bg-panel max-sm:grid-cols-1" href="/errors/{{.ID}}">
+              <span class="min-w-0">
+                <span class="block truncate font-semibold text-ink">{{.Class}}<span class="font-normal text-muted"> {{.Message}}</span></span>
+                <span class="block text-[13px] text-quiet">{{.App}} · {{ago .LastSeen}}</span>
+              </span>
+              {{template "statuspill" .Status}}
+            </a>
+          </li>
+          {{end}}
+        </ul>
+        {{else}}
+        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No errors yet. Once an app reports one it shows up here within seconds. <a class="font-semibold text-ruby-light" href="/settings">Set up an agent in Settings.</a></p>
+        {{end}}
+      </section>
+
+      <section class="mt-12" aria-labelledby="projects-heading">
+        <h2 class="mb-3 text-lg font-bold tracking-tight" id="projects-heading">Projects</h2>
+        {{if .Stats.ProjectSummary}}
+        <ul class="m-0 list-none divide-y divide-line p-0">
+          {{range .Stats.ProjectSummary}}
+          <li>
+            <a class="grid grid-cols-[minmax(8rem,1fr)_6rem_7rem_minmax(8rem,12rem)_1rem] items-center gap-4 px-1 py-3.5 no-underline hover:bg-panel max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-y-1" href="/projects/{{.Slug}}">
+              <span class="truncate font-semibold text-ink">{{.Name}}</span>
+              <span class="text-sm {{if .Open}}font-semibold text-ruby-light{{else}}text-quiet{{end}} max-sm:text-right">{{.Open}} open</span>
+              <span class="h-6 w-28 {{if .Open}}text-ruby{{else}}text-quiet{{end}} max-sm:hidden">{{spark .Spark}}</span>
+              <span class="text-sm text-muted max-sm:col-span-2">{{if .LastError}}last error {{ago .LastError.UTC}}{{else}}no errors yet{{end}}</span>
+              <span class="text-quiet max-sm:hidden" aria-hidden="true">›</span>
+            </a>
+          </li>
+          {{end}}
+        </ul>
+        {{else}}
+        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No projects yet. Create one from your agent; see <a class="font-semibold text-ruby-light" href="/settings">Settings</a>.</p>
+        {{end}}
+      </section>
+      {{template "footer"}}
+    </main>
+  </body>
+</html>
+
+{{define "tile"}}
+        <div class="rounded-xl bg-panel p-5 shadow-panel max-sm:p-4">
+          <p class="m-0 text-4xl font-bold leading-none tracking-tight tabular-nums max-sm:text-3xl {{if eq .Tone "ruby"}}text-ink{{else if eq .Tone "mint"}}text-ink{{else}}text-ink{{end}}">{{.Value}}</p>
+          <p class="mb-4 mt-2 text-sm text-muted">{{.Label}}</p>
+          <div class="h-8 {{if eq .Tone "ruby"}}text-ruby{{else if eq .Tone "mint"}}text-mint{{else}}text-muted{{end}}" role="img" aria-label="{{.Label}}, last 14 days: {{.Alt}}">{{spark .Series}}</div>
+        </div>
+{{end}}

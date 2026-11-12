@@ -65,7 +65,8 @@ The repository must belong to a GitHub App installation connected by the signed-
 
 Backtrace entries beginning with `app/` identify application frames for grouping. Raises groups notices by error class and the first application frame.
 
-- `GET /v1/errors?app=widget&unacked=1`
+- `GET /v1/errors?app=widget&unacked=1` (flat array, unchanged)
+- `GET /v1/errors?app=widget&status=open&page=1&per_page=25` returns `{errors, page, page_size, total, pages}`. `status` is `open` (not acknowledged), `acknowledged`, `fixed` (the linked GitHub issue was closed) or `all`; suppressed errors appear only under `all`. Each error carries a `status` field and, when fixed, `resolved_at`. `per_page` defaults to 25 (max 100).
 - `GET /v1/errors/:id`
 - `GET /v1/errors/:id/notices?limit=5`
 - `POST /v1/errors/:id/ack`
