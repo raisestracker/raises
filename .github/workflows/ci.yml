@@ -14,8 +14,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.6"
           cache: true
@@ -27,10 +27,64 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: docker compose --env-file .env.example config
       - run: docker compose --env-file .env.example up --build -d
       - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/healthz
       - run: curl --fail http://127.0.0.1:8080/readyz
       - if: always()
         run: docker compose --env-file .env.example down --volumes
+
+  # Deploys the exact commit that just passed both jobs above. Runs only on
+  # pushes to master (i.e. PR merges); PRs and red runs never reach it.
+  deploy:
+    needs: [go, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      KAMAL_VERSION: "2.12.0"
+      KAMAL_HOST: ${{ vars.KAMAL_HOST }}
+      KAMAL_SSH_USER: ${{ vars.KAMAL_SSH_USER }}
+      KAMAL_PROXY_HOST: ${{ vars.KAMAL_PROXY_HOST }}
+      KAMAL_BASE_URL: ${{ vars.KAMAL_BASE_URL }}
+      INITIAL_OWNER_GITHUB_ID: ${{ vars.INITIAL_OWNER_GITHUB_ID }}
+      GITHUB_APP_ID: ${{ secrets.RAISES_GITHUB_APP_ID }}
+      GITHUB_APP_CLIENT_ID: ${{ secrets.RAISES_GITHUB_APP_CLIENT_ID }}
+      GITHUB_APP_CLIENT_SECRET: ${{ secrets.RAISES_GITHUB_APP_CLIENT_SECRET }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.RAISES_GITHUB_APP_PRIVATE_KEY }}
+      GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.RAISES_GITHUB_APP_WEBHOOK_SECRET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      WEBHOOK_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_ENCRYPTION_KEY }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install Kamal
+        run: |
+          gem install --no-document kamal -v "$KAMAL_VERSION"
+          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Prepare Kamal secrets
+        run: cp .kamal/secrets.example .kamal/secrets
+      - name: Deploy and smoke test
+        run: bin/release
+      - name: Verify live version
+        run: |
+          live="$(kamal app version)"
+          echo "live: $live  expected: $GITHUB_SHA"
+          case "$live" in *"$GITHUB_SHA"*) ;; *) echo "live container is not on $GITHUB_SHA" >&2; exit 1 ;; esac
