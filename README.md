@@ -32,6 +32,10 @@ See the [self-hosting guide](docs/self-hosting.md) for Docker Compose, GitHub Ap
 
 See the [API reference](docs/api.md) for agent and ingestion interfaces.
 
+## Testing
+
+`go test -race ./...` runs the unit tests. `bin/acceptance` runs the acceptance suite: the real server and database, browser flows in Chromium and WebKit, and the agent API end to end. See [acceptance/README.md](acceptance/README.md).
+
 ## License
 
 The server is licensed under [AGPL-3.0-only](LICENSE).
