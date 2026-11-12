@@ -24,8 +24,13 @@ section "Go tests"
 go test -race ./...
 
 section "Acceptance suite (Chromium, WebKit, API)"
-# Needs docker or podman, or ACCEPTANCE_NATIVE=1 with local Playwright browsers.
-bin/acceptance
+if [[ "${SKIP_ACCEPTANCE:-0}" == "1" ]]; then
+  # The CI acceptance job covers this; lbl-linux has no container runtime.
+  printf 'Skipped (SKIP_ACCEPTANCE=1).\n'
+else
+  # Needs docker or podman, or ACCEPTANCE_NATIVE=1 with local Playwright browsers.
+  bin/acceptance
+fi
 
 section "Go dependency and vulnerability checks"
 go mod verify

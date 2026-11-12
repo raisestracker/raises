@@ -24,7 +24,11 @@ jobs:
         with:
           node-version: "24"
       # Same checks as the manual bin/deploy, so the deploy gate matches it.
+      # The containerized acceptance suite runs in the acceptance job below
+      # (lbl-linux has no container runtime); deploy gates on all three jobs.
       - run: bin/check
+        env:
+          SKIP_ACCEPTANCE: "1"
 
   docker:
     runs-on: ubuntu-latest

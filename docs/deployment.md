@@ -1,6 +1,6 @@
 # Deployment
 
-Production deploys happen automatically when a PR merges to `master`. The `deploy` job in `.github/workflows/ci.yml` needs the `PR tests` (`go`) and `docker` jobs to pass on that same commit, so a red CI run never deploys. It then runs `bin/release` (`kamal deploy`, then `/healthz` and `/readyz` smoke tests), checks that `kamal app version` reports the merged SHA, and runs `bin/release-tag` to tag the release and cut GitHub release notes from the merged PRs. Deploys run one at a time (`concurrency: production`, no cancel). If a deploy fails, Kamal keeps serving the previous release.
+Production deploys happen automatically when a PR merges to `master`. The `deploy` job in `.github/workflows/ci.yml` needs the `PR tests` (`go`), `docker`, and `acceptance` jobs to pass on that same commit, so a red CI run never deploys. (The `go` job runs `bin/check` with `SKIP_ACCEPTANCE=1` because the self-hosted runner has no container runtime; the `acceptance` job covers that suite.) It then runs `bin/release` (`kamal deploy`, then `/healthz` and `/readyz` smoke tests), checks that `kamal app version` reports the merged SHA, and runs `bin/release-tag` to tag the release and cut GitHub release notes from the merged PRs. Deploys run one at a time (`concurrency: production`, no cancel). If a deploy fails, Kamal keeps serving the previous release.
 
 ## GitHub `production` environment
 
