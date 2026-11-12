@@ -34,3 +34,37 @@ jobs:
       - run: curl --fail http://127.0.0.1:8080/readyz
       - if: always()
         run: docker compose --env-file .env.example down --volumes
+
+  acceptance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Keep this tag equal to @playwright/test in acceptance/package.json.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host
+    defaults:
+      run:
+        working-directory: acceptance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check the container matches the Playwright package
+        run: test "v$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" = "v1.64.1"
+      - run: npm ci --ignore-scripts
+      - name: Acceptance suite (Chromium, WebKit, API)
+        run: npx playwright test
+        env:
+          CI: "true"
+          HOME: /root
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report
+          path: |
+            acceptance/playwright-report/
+            acceptance/test-results/
+          retention-days: 7

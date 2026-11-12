@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Runs the acceptance suite (acceptance/): the real server and SQLite store,
+# browser flows in Chromium and WebKit, and the agent API end to end.
+#
+#   bin/acceptance                 run everything
+#   bin/acceptance --project=webkit -g "bootstrap"
+#
+# Extra arguments go to `playwright test`. By default the browsers run in the
+# official Playwright container (docker, else podman), which has every system
+# library WebKit needs. Set ACCEPTANCE_NATIVE=1 to use browsers installed on
+# this machine instead (`npx playwright install chromium webkit`).
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR/acceptance"
+
+PLAYWRIGHT_VERSION="$(node -p 'require("./package.json").devDependencies["@playwright/test"]')"
+IMAGE="mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble"
+
+if [[ ! -d node_modules/@playwright/test ]] || [[ package-lock.json -nt node_modules/.package-lock.json ]]; then
+  npm ci --ignore-scripts
+fi
+
+runtime=""
+if [[ "${ACCEPTANCE_NATIVE:-0}" != "1" ]]; then
+  for candidate in docker podman; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" info >/dev/null 2>&1; then
+      runtime="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$runtime" ]]; then
+    printf 'No working docker or podman found. Install one, or set ACCEPTANCE_NATIVE=1 with local Playwright browsers.\n' >&2
+    exit 1
+  fi
+fi
+
+mkdir -p .bin
+if [[ -z "$runtime" ]]; then
+  CGO_ENABLED=0 go build -o .bin/raises-acceptance ../cmd/raises-acceptance
+  RAISES_ACCEPTANCE_BIN=.bin/raises-acceptance exec npx playwright test "$@"
+fi
+
+case "$(uname -m)" in
+  x86_64 | amd64) goarch=amd64 ;;
+  arm64 | aarch64) goarch=arm64 ;;
+  *) printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+esac
+(cd .. && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -o acceptance/.bin/raises-acceptance-linux ./cmd/raises-acceptance)
+
+run_flags=(--rm --ipc=host)
+[[ -t 1 ]] && run_flags+=(-t)
+# docker's --init reaps the browsers' child processes; rootless podman may
+# lack its init binary, and the container exits with the test run anyway.
+[[ "$runtime" == docker ]] && run_flags+=(--init)
+exec "$runtime" run "${run_flags[@]}" \
+  -v "$ROOT_DIR/acceptance:/work:Z" -w /work \
+  -e CI="${CI:-}" -e RAISES_ACCEPTANCE_BIN=.bin/raises-acceptance-linux \
+  "$IMAGE" npx playwright test "$@"
