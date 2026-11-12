@@ -50,11 +50,13 @@ jobs:
       group: production
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write # push the release tag and cut the GitHub release
     env:
       KAMAL_VERSION: "2.12.0"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0 # release-tag needs tags and history
       - name: Install Kamal
         run: |
           gem install --user-install --no-document kamal -v "$KAMAL_VERSION"
@@ -96,3 +98,10 @@ jobs:
           live="$(kamal app version)"
           echo "live: $live  expected: $GITHUB_SHA"
           case "$live" in *"$GITHUB_SHA"*) ;; *) echo "live container is not on $GITHUB_SHA" >&2; exit 1 ;; esac
+      # Tag the deployed commit (minor on feat:, else patch) and cut a GitHub
+      # release with notes from the merged PRs. Runs only after the live
+      # version check above passed, so the tag always matches production.
+      - name: Tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bin/release-tag

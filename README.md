@@ -28,7 +28,7 @@ Set `RAISES_TOKEN` to a project ingestion token. The client reports returned err
 
 See the [self-hosting guide](docs/self-hosting.md) for Docker Compose, GitHub App setup, backups, and optional integrations.
 
-Production deploys run automatically when a PR merges to `master` after CI passes; see [deployment](docs/deployment.md) for setup and rollback.
+Production deploys run automatically when a PR merges to `master` after CI passes, and each deploy cuts a version tag plus a GitHub release; see [deployment](docs/deployment.md) for setup, releases, and rollback.
 
 ## API
 

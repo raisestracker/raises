@@ -22,7 +22,7 @@ require_command() {
   fi
 }
 
-for command_name in curl git go gofmt kamal npm; do
+for command_name in curl gh git go gofmt kamal npm; do
   require_command "$command_name"
 done
 
@@ -54,5 +54,6 @@ fi
 git push origin master
 
 bin/release
+bin/release-tag
 
 section "Deploy complete"

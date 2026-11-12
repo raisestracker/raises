@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Tag the next release (vX.Y.Z) on HEAD and cut a GitHub release whose notes
+# list the PRs merged since the previous tag, so releases stay traceable.
+#
+# Version rule: minor when a commit subject in range starts with feat:/feature:
+# (case-insensitive, optional scope); otherwise patch. Override with --minor
+# or --patch. Rerunning for an existing tag is a no-op.
+#
+# Used by the GitHub Actions deploy job (after smoke tests and the live-version
+# check) and manually after bin/deploy. Needs git history (fetch-depth: 0 in
+# CI) and `gh` for the release notes; without `gh` it still pushes the tag.
+set -Eeuo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+BUMP=auto
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --minor) BUMP=minor ;;
+    --patch) BUMP=patch ;;
+    *) printf 'usage: %s [--minor|--patch]\n' "$(basename "$0")" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+prev="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+if [[ -z "$prev" ]]; then
+  range="HEAD"
+  major=0; minor=1; patch=0
+  prev_major=0; prev_minor=0; prev_patch=0
+else
+  range="${prev}..HEAD"
+  ver="${prev#v}"
+  prev_major="${ver%%.*}"; rest="${ver#*.}"
+  prev_minor="${rest%%.*}"; prev_patch="${rest#*.}"
+  major="$prev_major"; minor="$prev_minor"; patch="$prev_patch"
+fi
+
+if [[ "$BUMP" == auto ]]; then
+  if git log --format=%s "$range" | grep -qiE '^[[:space:]]*feat(ure)?(\([^)]*\))?:'; then
+    BUMP=minor
+  else
+    BUMP=patch
+  fi
+fi
+if [[ "$BUMP" == minor ]]; then
+  minor=$((prev_minor + 1)); patch=0
+else
+  patch=$((prev_patch + 1))
+fi
+next="v${major}.${minor}.${patch}"
+
+if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
+  printf 'Tag %s already exists; nothing to do.\n' "$next"
+  exit 0
+fi
+
+if [[ -n "$prev" ]] && [[ "$(git rev-list --count "$range")" -eq 0 ]]; then
+  printf 'No changes since %s; nothing to do.\n' "$prev"
+  exit 0
+fi
+
+slug="$(git remote get-url origin | sed -E 's#.*[:/]([^/]+/[^/]+?)(\.git)?$#\1#')"
+notes="## What's changed since ${prev:-the beginning}"
+while IFS= read -r subject; do
+  [[ -z "$subject" ]] && continue
+  if [[ "$subject" =~ \(#([0-9]+)\)$ ]]; then
+    num="${BASH_REMATCH[1]}"
+    title="${subject% \(#$num\)}"
+    notes="${notes}
+- ${title} ([#${num}](https://github.com/${slug}/pull/${num}))"
+  elif [[ "$subject" =~ ^Merge\ pull\ request\ #([0-9]+) ]]; then
+    num="${BASH_REMATCH[1]}"
+    title="PR #${num}"
+    if command -v gh >/dev/null 2>&1; then
+      t="$(gh pr view "$num" --repo "$slug" --json title -q .title 2>/dev/null || true)"
+      [[ -n "$t" ]] && title="$t"
+    fi
+    notes="${notes}
+- ${title} ([#${num}](https://github.com/${slug}/pull/${num}))"
+  elif [[ "$subject" == Merge\ * ]]; then
+    continue # branch-merge noise; real PR merges match the cases above
+  else
+    notes="${notes}
+- ${subject}"
+  fi
+done <<< "$(git log --format=%s "$range")"
+
+git tag "$next"
+git push origin "$next"
+printf 'Tagged %s (bump: %s).\n' "$next" "$BUMP"
+
+if command -v gh >/dev/null 2>&1; then
+  gh release create "$next" --title "Raises $next" --notes "$notes" --target "$(git rev-parse HEAD)"
+  printf 'Cut GitHub release %s.\n' "$next"
+else
+  printf 'gh not found: tag pushed, create the GitHub release by hand:\n%s\n' "$notes"
+fi
