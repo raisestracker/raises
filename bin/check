@@ -23,6 +23,10 @@ go vet ./...
 section "Go tests"
 go test -race ./...
 
+section "Acceptance suite (Chromium, WebKit, API)"
+# Needs docker or podman, or ACCEPTANCE_NATIVE=1 with local Playwright browsers.
+bin/acceptance
+
 section "Go dependency and vulnerability checks"
 go mod verify
 go mod tidy -diff

@@ -395,6 +395,16 @@ func (s *Store) ClearLegacyTokens(ctx context.Context, userID int64) error {
 	return err
 }
 
+// ClearAllLegacyTokens retires every legacy static ingestion hash, whatever
+// owner it was ever assigned to (including owner 0 and owners from a previous
+// INITIAL_OWNER_GITHUB_ID). Audit: apps.token_hash is written only by the
+// legacy APP_*_TOKEN upsert path; modern projects carry an empty token_hash and
+// authenticate through project_tokens, which this leaves untouched.
+func (s *Store) ClearAllLegacyTokens(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET token_hash='' WHERE token_hash != ''`)
+	return err
+}
+
 func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (token string, session Session, err error) {
 	token, err = randomID("ses_", 32)
 	if err != nil {
@@ -745,6 +755,8 @@ func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug stri
 	if name == "" || len(name) > maxProjectNameLength || len(slug) > maxProjectSlugLength || !slugPattern.MatchString(slug) {
 		return Project{}, fmt.Errorf("valid name and slug are required")
 	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
 		return Project{}, err
@@ -782,6 +794,8 @@ func (s *Store) UpdateProject(ctx context.Context, userID int64, id, name string
 }
 
 func (s *Store) SetProjectArchived(ctx context.Context, userID int64, id string, archived bool) (Project, error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	project, err := s.GetProject(ctx, userID, id)
 	if err != nil {
 		return Project{}, err
@@ -818,6 +832,8 @@ func (s *Store) CreateProjectToken(ctx context.Context, userID int64, projectID 
 	if project.ArchivedAt != nil {
 		return "", ProjectToken{}, fmt.Errorf("project is archived")
 	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_tokens WHERE project_id=? AND revoked_at_unix IS NULL`, projectID).Scan(&count); err != nil {
 		return "", ProjectToken{}, err

@@ -22,7 +22,7 @@ require_command() {
   fi
 }
 
-for command_name in curl gh git go gofmt kamal npm; do
+for command_name in curl gh git go gofmt kamal node npm; do
   require_command "$command_name"
 done
 

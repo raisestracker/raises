@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -100,8 +101,13 @@ type IssueFiler interface {
 }
 
 type Store struct {
-	db                       *sql.DB
-	now                      func() time.Time
+	db  *sql.DB
+	now func() time.Time
+	// quotaMu serializes quota-checked writes (project/token creation and
+	// archive restore) so concurrent requests from one account cannot pass
+	// the count check together and overshoot the cap. The deployment runs a
+	// single server process, which is the scope this guards.
+	quotaMu                  sync.Mutex
 	filer                    IssueFiler
 	keepNotices              int
 	jobNotify                chan struct{}

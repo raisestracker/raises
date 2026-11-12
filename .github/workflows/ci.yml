@@ -39,10 +39,10 @@ jobs:
       - if: always()
         run: docker compose --env-file .env.example down --volumes
 
-  # Deploys the exact commit that just passed both jobs above. Runs only on
+  # Deploys the exact commit that just passed the jobs above. Runs only on
   # pushes to master (i.e. PR merges); PRs and red runs never reach it.
   deploy:
-    needs: [go, docker]
+    needs: [go, docker, acceptance]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     environment: production
@@ -105,3 +105,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bin/release-tag
+
+  acceptance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Keep this tag equal to @playwright/test in acceptance/package.json.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host
+    defaults:
+      run:
+        working-directory: acceptance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check the container matches the Playwright package
+        run: test "v$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" = "v1.64.1"
+      - run: npm ci --ignore-scripts
+      - name: Acceptance suite (Chromium, WebKit, API)
+        run: npx playwright test
+        env:
+          CI: "true"
+          HOME: /root
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report
+          path: |
+            acceptance/playwright-report/
+            acceptance/test-results/
+          retention-days: 7
