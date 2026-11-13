@@ -646,10 +646,54 @@ func boolToInt(v bool) int {
 }
 
 func issueTitle(group Group) string {
-	return fmt.Sprintf("[%s] %s in %s", group.Env, group.Class, group.Location)
+	title := fmt.Sprintf("[%s] %s in %s", group.Env, group.Class, group.Location)
+	// The title is a single GitHub issue line: flatten newlines and cap
+	// length (by rune, so multi-byte text is never split).
+	title = strings.ReplaceAll(strings.ReplaceAll(title, "\r", " "), "\n", " ")
+	if runes := []rune(title); len(runes) > 256 {
+		title = string(runes[:256])
+	}
+	return title
+}
+
+// fenceFor returns a fenced-code-block fence one run longer than any
+// backtick run in the value (at least three backticks), so the value cannot
+// break out of its fenced block.
+func fenceFor(value string) string {
+	longest, run := 0, 0
+	for _, r := range value {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	if n := longest + 1; n >= 3 {
+		return strings.Repeat("`", n)
+	}
+	return "```"
+}
+
+// fencedField renders one client-supplied value as an inert fenced block
+// under a Raises-generated label. Everything the ingestor accepted — Class,
+// Location, Message, App, Env, Revision — renders as plain text: mentions,
+// links, images, headings and inline code cannot survive GitHub rendering.
+func fencedField(label, value string) string {
+	fence := fenceFor(value)
+	return fmt.Sprintf("%s:\n%s\n%s\n%s", label, fence, value, fence)
 }
 
 func issueBody(group Group, deliveryMarker string) string {
-	return fmt.Sprintf("%s\n<!-- raises:%s -->\n\n**%s** in `%s`\n\n%s\n\n- Project: `%s`\n- Environment: `%s`\n- Revision: `%s`\n- Raises error: `%d`\n\nAsk your agent to inspect this error through the Raises API.\n",
-		deliveryMarker, group.Fingerprint, group.Class, group.Location, group.Message, group.App, group.Env, group.LastRevision, group.ID)
+	return fmt.Sprintf("%s\n<!-- raises:%s -->\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n- Raises error: `%d`\n\nAsk your agent to inspect this error through the Raises API.\n",
+		deliveryMarker, group.Fingerprint,
+		fencedField("Class", group.Class),
+		fencedField("Location", group.Location),
+		fencedField("Message", group.Message),
+		fencedField("Project", group.App),
+		fencedField("Environment", group.Env),
+		fencedField("Revision", group.LastRevision),
+		group.ID)
 }
