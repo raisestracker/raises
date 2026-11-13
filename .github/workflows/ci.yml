@@ -38,14 +38,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: docker compose --env-file .env.example config
       - run: docker compose --env-file .env.example up --build -d
-      # The container needs a moment after start before the app listens;
-      # poll instead of hitting it once so a fast runner can't win the race.
-      - run: |
-          for i in $(seq 1 30); do
-            curl --fail --silent http://127.0.0.1:8080/healthz && break
-            sleep 1
-          done
-          curl --fail http://127.0.0.1:8080/healthz
+      - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/healthz
       - run: curl --fail http://127.0.0.1:8080/readyz
       - if: always()
         run: docker compose --env-file .env.example down --volumes
