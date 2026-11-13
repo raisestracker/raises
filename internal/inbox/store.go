@@ -468,6 +468,10 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	return IngestResult{Group: group, Created: created, Regressed: regressed}, nil
 }
 
+// List is tenant-unsafe: it reads every account's error groups. HTTP
+// handlers must use ListForUser; direct callers are limited to the ingest
+// pipeline and other internal/system use. It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, error) {
 	query := `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
@@ -504,6 +508,11 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 	return groups, rows.Err()
 }
 
+// Get is tenant-unsafe: it reads any error group by ID. HTTP handlers must
+// use GetForUser (or a ForUser wrapper, which checks ownership first);
+// direct callers are limited to internal/system use (scoped wrappers, the
+// ingest pipeline, background jobs). It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Get(ctx context.Context, id int64) (Group, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
@@ -518,6 +527,9 @@ func (s *Store) Get(ctx context.Context, id int64) (Group, error) {
 	return group, err
 }
 
+// Notices is tenant-unsafe: it reads any group's notices by ID. HTTP
+// handlers must use NoticesForUser. It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Notices(ctx context.Context, id int64, limit int) ([]Notice, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
@@ -547,6 +559,9 @@ func (s *Store) Notices(ctx context.Context, id int64, limit int) ([]Notice, err
 	return notices, rows.Err()
 }
 
+// Ack is tenant-unsafe: it acknowledges any error group by ID. HTTP
+// handlers must use AckForUser. It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
 	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET acked_at_unix = ? WHERE id = ?`, now, id)
@@ -560,6 +575,9 @@ func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 	return s.Get(ctx, id)
 }
 
+// Suppress is tenant-unsafe: it suppresses any error group by ID. HTTP
+// handlers must use SuppressForUser. It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Suppress(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
 	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET suppressed_at_unix = ? WHERE id = ?`, now, id)
@@ -573,6 +591,9 @@ func (s *Store) Suppress(ctx context.Context, id int64) (Group, error) {
 	return s.Get(ctx, id)
 }
 
+// Unsuppress is tenant-unsafe: it unsuppresses any error group by ID. HTTP
+// handlers must use UnsuppressForUser. It is deliberately absent from the
+// httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Unsuppress(ctx context.Context, id int64) (Group, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET suppressed_at_unix = NULL WHERE id = ?`, id)
 	if err != nil {

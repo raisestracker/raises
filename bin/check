@@ -23,6 +23,24 @@ go vet ./...
 section "Go tests"
 go test -race ./...
 
+section "Pinned actions and non-root container"
+# Every third-party action must be pinned to a full commit SHA (an optional
+# `# tag` comment may follow); a floating tag reintroduces supply-chain drift.
+bad_refs="$(grep -rhoE 'uses:[[:space:]]*[^[:space:]#]+' .github/workflows | sed 's/^uses:[[:space:]]*//' | grep -vE '^[^@]+@[0-9a-f]{40}$' || true)"
+if [[ -n "$bad_refs" ]]; then
+  printf 'Unpinned actions (pin to a full commit SHA):\n%s\n' "$bad_refs" >&2
+  exit 1
+fi
+# The service must not run as root: require a numeric non-root USER.
+if grep -Eq '^USER (0|root)([:[:space:]]|$)' Dockerfile; then
+  printf 'Dockerfile must not run as root\n' >&2
+  exit 1
+fi
+if ! grep -Eq '^USER [1-9][0-9]*([:][0-9]+)?$' Dockerfile; then
+  printf 'Dockerfile must set a numeric non-root USER\n' >&2
+  exit 1
+fi
+
 section "Acceptance suite (Chromium, WebKit, API)"
 if [[ "${SKIP_ACCEPTANCE:-0}" == "1" ]]; then
   # The CI acceptance job covers this; lbl-linux has no container runtime.

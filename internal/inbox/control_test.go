@@ -190,6 +190,31 @@ func TestAccountKeyMintsAgentKeysWithAuditTrail(t *testing.T) {
 	}
 }
 
+func TestAccountKeyActsAsSameAccountAgentKey(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	user, err := store.UpsertGitHubUser(ctx, 6341, "owner", "Owner", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.UpsertGitHubUser(ctx, 6342, "neighbor", "Neighbor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountToken, _, err := store.CreateAccountKey(ctx, user.ID, "CI host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberate contract: an account key authenticates on the data plane as
+	// an ordinary key of its own account — and only that account.
+	if got, err := store.AuthenticateAgent(ctx, accountToken); err != nil || got != user.ID {
+		t.Fatalf("account key must authenticate as its own account: user=%d err=%v", got, err)
+	}
+	if got, err := store.AuthenticateAgent(ctx, accountToken); err != nil || got == other.ID {
+		t.Fatalf("account key must never resolve to another account: user=%d err=%v", got, err)
+	}
+}
+
 func TestLegacySchemaMigratesInPlace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)

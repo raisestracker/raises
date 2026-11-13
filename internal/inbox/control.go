@@ -635,6 +635,15 @@ func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, nam
 	return token, key, tx.Commit()
 }
 
+// AuthenticateAgent resolves any active agent key token — ordinary or account
+// (can_mint) — to its account's user ID. Account keys intentionally act as
+// ordinary same-account keys on the data plane: every data-plane endpoint
+// scopes by the returned user ID, so an account key reaches exactly the same
+// projects as any other key of the same account and nothing cross-tenant.
+// Management-only operations (mint/list/revoke under /v1/agent-keys) stay
+// behind AuthenticateAccountKey, which rejects ordinary keys. Narrowing the
+// data plane to ordinary keys would break automation hosts configured with an
+// account key, so it needs an explicit product decision first.
 func (s *Store) AuthenticateAgent(ctx context.Context, token string) (int64, error) {
 	var userID int64
 	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID)

@@ -49,6 +49,18 @@ docker compose build
 docker compose up -d
 ```
 
+The service runs as the unprivileged uid `65532`, and the image ships `/data` owned by that uid, so a fresh volume works without extra steps. A volume created by an older root-run image is still root-owned and the new container cannot write to it: give it to the runtime uid once before starting the upgraded container.
+
+```sh
+docker compose stop
+docker run --rm -v raises_raises_data:/data busybox chown -R 65532:65532 /data
+docker compose build
+docker compose up -d
+curl http://127.0.0.1:8080/readyz
+```
+
+Rollback is the previous image: `docker compose stop`, point the build back at the previous commit (or retag), `docker compose up -d`. The data files stay compatible in both directions; no dump or migration is involved.
+
 ## Optional integrations
 
 Set `REPORT_ENABLED=1` or `OPERATIONAL_ALERTS_ENABLED=1` only after setting `REPORT_EMAIL_FROM`, `REPORT_EMAIL_TO`, and `AWS_REGION` for Amazon SES. Provide AWS credentials through `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`, or use an attached instance role. Do not enable SES by default.
