@@ -177,6 +177,10 @@ func (fakeGitHub) Installation(context.Context, int64) (gh.Installation, error) 
 
 func (fakeGitHub) Repositories(context.Context, int64) ([]gh.Repository, error) { return nil, nil }
 
+func (fakeGitHub) UserInstallationRepositories(context.Context, string, int64) ([]gh.Repository, error) {
+	return nil, nil
+}
+
 // deliveryRecorder stands in for the outbound HTTP client. Deliveries go
 // through the real queue and worker; only the final network send is replaced.
 type deliveryRecorder struct {
