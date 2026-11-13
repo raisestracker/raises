@@ -15,7 +15,7 @@ import (
 	"github.com/raisestracker/raises/internal/inbox"
 )
 
-func newRateLimitServer(t *testing.T) *Server {
+func newRateLimitServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
 	if err != nil {
@@ -28,7 +28,17 @@ func newRateLimitServer(t *testing.T) *Server {
 	if err := store.UpsertApp(context.Background(), "gadget", "app-token-2", "example/gadget"); err != nil {
 		t.Fatal(err)
 	}
-	return New(store, "agent-token", slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20)
+	// Static agent tokens are retired, so agent traffic authenticates with a
+	// DB-backed key minted for a fixture owner.
+	owner, err := store.UpsertGitHubUser(context.Background(), 4242, "ratelimit-owner", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentToken, _, err := store.CreateAgentKey(context.Background(), owner.ID, "ratelimit-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{}), agentToken
 }
 
 func postNotice(s *Server, token, remoteAddr, forwardedFor string) int {
@@ -61,7 +71,7 @@ func getErrors(s *Server, token, remoteAddr, forwardedFor string) int {
 
 // Distinct invalid tokens must neither bypass the limiter nor grow its state.
 func TestDistinctInvalidTokensStayBounded(t *testing.T) {
-	s := newRateLimitServer(t)
+	s, _ := newRateLimitServer(t)
 	const total = 20000
 	seen429 := false
 	for i := 0; i < total; i++ {
@@ -139,7 +149,7 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 // One IP hammering an invalid token is throttled by the per-IP failure
 // budget, even though successes are never charged pre-auth.
 func TestSingleIPInvalidTokenFloodIsThrottled(t *testing.T) {
-	s := newRateLimitServer(t)
+	s, _ := newRateLimitServer(t)
 	throttled := false
 	for i := 0; i < failedAuthPerIPLimit+50; i++ {
 		if code := postNotice(s, "same-junk", "127.0.0.1:1234", "198.51.100.7"); code == http.StatusTooManyRequests {
@@ -156,7 +166,7 @@ func TestSingleIPInvalidTokenFloodIsThrottled(t *testing.T) {
 // rotate X-Forwarded-For to mint fresh buckets, while requests arriving via
 // the proxy are keyed by the address the proxy vouches for (last entry).
 func TestClientIPTrustGate(t *testing.T) {
-	s := newRateLimitServer(t)
+	s, _ := newRateLimitServer(t)
 
 	// Direct connection with a rotating header: one shared RemoteAddr bucket.
 	if code := getErrors(s, "junk", "198.51.100.9:1234", "10.0.0.1"); code != http.StatusUnauthorized {
@@ -174,7 +184,7 @@ func TestClientIPTrustGate(t *testing.T) {
 	}
 
 	// Via the proxy each client IP gets its own budget.
-	s2 := newRateLimitServer(t)
+	s2, _ := newRateLimitServer(t)
 	for i := 0; i < failedAuthPerIPLimit; i++ {
 		ip := fmt.Sprintf("203.0.%d.%d", (i>>8)&0xff, i&0xff)
 		if code := getErrors(s2, "junk", "127.0.0.1:8080", ip); code != http.StatusUnauthorized {
@@ -184,7 +194,7 @@ func TestClientIPTrustGate(t *testing.T) {
 
 	// Only the proxy-appended (last) entry counts: spoofed left entries share
 	// the real client's bucket.
-	s3 := newRateLimitServer(t)
+	s3, _ := newRateLimitServer(t)
 	throttled = false
 	for i := 0; i < failedAuthPerIPLimit+1; i++ {
 		xff := fmt.Sprintf("spoof-%d, 203.0.113.44", i)
@@ -205,11 +215,11 @@ func TestClientIPTrustGate(t *testing.T) {
 // A valid credential gets its own generous post-auth window, enforced
 // independently of the pre-auth IP budget.
 func TestPostAuthTokenWindowLimitsValidToken(t *testing.T) {
-	s := newRateLimitServer(t)
+	s, agentToken := newRateLimitServer(t)
 	var last int
 	for i := 0; i < postAuthAgentPerTokenLimit+1; i++ {
 		ip := fmt.Sprintf("203.0.%d.%d", (i>>8)&0xff, i&0xff)
-		last = getErrors(s, "agent-token", "127.0.0.1:8080", ip)
+		last = getErrors(s, agentToken, "127.0.0.1:8080", ip)
 		if i < postAuthAgentPerTokenLimit && last != http.StatusOK {
 			t.Fatalf("request %d: status=%d, want 200", i, last)
 		}
@@ -223,7 +233,7 @@ func TestPostAuthTokenWindowLimitsValidToken(t *testing.T) {
 // window: successes are never charged to a shared pre-auth bucket, so one
 // app's error storm cannot 429 another app on the same host or NAT.
 func TestSharedEgressIPValidTokensUnaffected(t *testing.T) {
-	s := newRateLimitServer(t)
+	s, _ := newRateLimitServer(t)
 	postValidNotice := func(token string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/notices",
 			strings.NewReader(`{"error":{"class":"RuntimeError","message":"boom"}}`))
