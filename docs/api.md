@@ -24,6 +24,8 @@ Create one account key per automation host in the settings UI (tick "Account key
 
 All three routes require an account key: ordinary agent keys get `403`, unknown tokens get `401`. Revoking an account key leaves the keys it minted usable. Minted keys count toward the same 100-key account limit.
 
+Key authority: an account key also works as an ordinary agent key on the data plane (every other endpoint in this document), reaching exactly the projects its account owns — the same set any other key of that account reaches. It never grants cross-account access: all data-plane reads and writes scope by the authenticated account. Management stays one-directional: ordinary keys cannot mint, list, or revoke keys.
+
 ## Projects
 
 - `GET /v1/projects?archived=1`

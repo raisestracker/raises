@@ -12,6 +12,12 @@ import (
 // round-trip provisions every later app key: mint with POST, list with GET,
 // revoke with DELETE. Minted keys are ordinary agent keys; revoking the
 // account key leaves keys it minted usable.
+//
+// Authority contract (deliberate, same-account only): an account key also
+// authenticates as an ordinary agent key on the data plane
+// (Store.AuthenticateAgent), reaching exactly the projects its account owns —
+// the same set any other key of that account reaches. Conversely, ordinary
+// keys never pass AuthenticateAccountKey and get 403 on the routes below.
 
 func (s *Server) accountKeyUser(w http.ResponseWriter, r *http.Request) (userID int64, keyID string, ok bool) {
 	token, present := bearer(r)

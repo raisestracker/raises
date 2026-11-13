@@ -26,11 +26,13 @@ import (
 
 type Store interface {
 	Ping(context.Context) error
+	// Ingest is token-scoped by the project credential; every other
+	// error-group access goes through a ForUser wrapper below. The unscoped
+	// inbox primitives (List, Get, Notices, Ack, Suppress, Unsuppress) are
+	// deliberately absent: a handler wired to one would bypass tenant
+	// scoping, so keeping them out of the interface makes that a compile
+	// error instead of a review catch. See TestStoreInterfaceHasNoUnscopedReads.
 	Ingest(context.Context, string, inbox.Notice) (inbox.IngestResult, error)
-	List(context.Context, string, bool) ([]inbox.Group, error)
-	Get(context.Context, int64) (inbox.Group, error)
-	Notices(context.Context, int64, int) ([]inbox.Notice, error)
-	Ack(context.Context, int64) (inbox.Group, error)
 	UpsertGitHubUser(context.Context, int64, string, string, string) (inbox.User, error)
 	AssignLegacyProjects(context.Context, int64) error
 	CreateSession(context.Context, int64, time.Duration) (string, inbox.Session, error)
@@ -229,8 +231,33 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /github/setup", s.githubSetup)
 	mux.HandleFunc("POST /webhooks/github", s.githubWebhook)
-	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, mux))
+	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, secureHeaders(mux)))
 	return s
+}
+
+// contentSecurityPolicy pins the only third-party code the console runs:
+// Google Fonts (every page) and Google Tag Manager (the public homepage).
+// Inline scripts stay allowed because the homepage gtag snippet and the
+// settings copy/mint script are inline; moving them to nonces is follow-up
+// work, not this change. Everything else — foreign scripts and styles,
+// plugins, frames, off-origin form targets — is denied.
+const contentSecurityPolicy = `default-src 'self'; ` +
+	`script-src 'self' https://www.googletagmanager.com 'unsafe-inline'; ` +
+	`style-src 'self' https://fonts.googleapis.com; ` +
+	`font-src 'self' https://fonts.gstatic.com; ` +
+	`img-src 'self' data:; ` +
+	`connect-src 'self' https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com; ` +
+	`object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`
+
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
