@@ -25,6 +25,9 @@ func newRateLimitServer(t *testing.T) *Server {
 	if err := store.UpsertApp(context.Background(), "widget", "app-token", "example/widget"); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertApp(context.Background(), "gadget", "app-token-2", "example/gadget"); err != nil {
+		t.Fatal(err)
+	}
 	return New(store, "agent-token", slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20)
 }
 
@@ -99,7 +102,9 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 		t.Fatalf("limiter state unbounded after probes: %d entries", size)
 	}
 
-	// A legitimate credential still works after the flood.
+	// While the flood's minute-window is still active the global failure
+	// budget sheds all load, valid credentials included: the gate cannot
+	// tell valid from junk before the auth lookup.
 	req := httptest.NewRequest(http.MethodPost, "/v1/notices",
 		strings.NewReader(`{"error":{"class":"RuntimeError","message":"boom"}}`))
 	req.RemoteAddr = "127.0.0.1:1234"
@@ -107,16 +112,36 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer app-token")
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("valid ingest mid-flood: status=%d, want 429", rec.Code)
+	}
+
+	// Once the flood stops and its windows expire, a legitimate credential
+	// works again with no lasting state damage.
+	s.limitMu.Lock()
+	for key, window := range s.limits {
+		window.Started = window.Started.Add(-2 * rateLimitWindow)
+		s.limits[key] = window
+	}
+	s.limitMu.Unlock()
+	req = httptest.NewRequest(http.MethodPost, "/v1/notices",
+		strings.NewReader(`{"error":{"class":"RuntimeError","message":"boom"}}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.250")
+	req.Header.Set("Authorization", "Bearer app-token")
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("valid ingest after flood: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-// One IP hammering an invalid token is throttled by the pre-auth IP budget.
+// One IP hammering an invalid token is throttled by the per-IP failure
+// budget, even though successes are never charged pre-auth.
 func TestSingleIPInvalidTokenFloodIsThrottled(t *testing.T) {
 	s := newRateLimitServer(t)
 	throttled := false
-	for i := 0; i < preAuthIngestPerIPLimit+50; i++ {
+	for i := 0; i < failedAuthPerIPLimit+50; i++ {
 		if code := postNotice(s, "same-junk", "127.0.0.1:1234", "198.51.100.7"); code == http.StatusTooManyRequests {
 			throttled = true
 			break
@@ -138,7 +163,7 @@ func TestClientIPTrustGate(t *testing.T) {
 		t.Fatalf("first direct request: status=%d, want 401", code)
 	}
 	throttled := false
-	for i := 0; i < preAuthAgentPerIPLimit; i++ {
+	for i := 0; i < failedAuthPerIPLimit; i++ {
 		if code := getErrors(s, "junk", "198.51.100.9:1234", fmt.Sprintf("10.0.0.%d", i)); code == http.StatusTooManyRequests {
 			throttled = true
 			break
@@ -150,7 +175,7 @@ func TestClientIPTrustGate(t *testing.T) {
 
 	// Via the proxy each client IP gets its own budget.
 	s2 := newRateLimitServer(t)
-	for i := 0; i < preAuthAgentPerIPLimit; i++ {
+	for i := 0; i < failedAuthPerIPLimit; i++ {
 		ip := fmt.Sprintf("203.0.%d.%d", (i>>8)&0xff, i&0xff)
 		if code := getErrors(s2, "junk", "127.0.0.1:8080", ip); code != http.StatusUnauthorized {
 			t.Fatalf("proxied request %d: status=%d, want 401", i, code)
@@ -161,7 +186,7 @@ func TestClientIPTrustGate(t *testing.T) {
 	// the real client's bucket.
 	s3 := newRateLimitServer(t)
 	throttled = false
-	for i := 0; i < preAuthAgentPerIPLimit; i++ {
+	for i := 0; i < failedAuthPerIPLimit+1; i++ {
 		xff := fmt.Sprintf("spoof-%d, 203.0.113.44", i)
 		code := getErrors(s3, "junk", "127.0.0.1:8080", xff)
 		if code == http.StatusTooManyRequests {
@@ -191,6 +216,42 @@ func TestPostAuthTokenWindowLimitsValidToken(t *testing.T) {
 	}
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("valid token over its post-auth window: status=%d, want 429", last)
+	}
+}
+
+// Two valid app tokens behind one egress IP each get their full post-auth
+// window: successes are never charged to a shared pre-auth bucket, so one
+// app's error storm cannot 429 another app on the same host or NAT.
+func TestSharedEgressIPValidTokensUnaffected(t *testing.T) {
+	s := newRateLimitServer(t)
+	postValidNotice := func(token string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/notices",
+			strings.NewReader(`{"error":{"class":"RuntimeError","message":"boom"}}`))
+		req.RemoteAddr = "127.0.0.1:8080"
+		req.Header.Set("X-Forwarded-For", "203.0.113.77")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	const perToken = 150
+	for i := 0; i < perToken; i++ {
+		// 201 first seen, 200 once deduped into the same group: both prove
+		// the request was accepted rather than rate-limited.
+		if code := postValidNotice("app-token"); code != http.StatusCreated && code != http.StatusOK {
+			t.Fatalf("token 1 request %d: status=%d, want 201/200", i, code)
+		}
+		if code := postValidNotice("app-token-2"); code != http.StatusCreated && code != http.StatusOK {
+			t.Fatalf("token 2 request %d: status=%d, want 201/200", i, code)
+		}
+	}
+	// Valid traffic mints no success-charging pre-auth state at all.
+	s.limitMu.Lock()
+	defer s.limitMu.Unlock()
+	for key := range s.limits {
+		if strings.HasPrefix(key, "preauth:") {
+			t.Fatalf("valid traffic charged pre-auth bucket %q", key)
+		}
 	}
 }
 

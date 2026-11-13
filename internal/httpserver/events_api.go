@@ -16,7 +16,9 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	if !s.allowRequest("preauth:ingest:"+clientIP(r), preAuthIngestPerIPLimit) {
+	// Gate on the failure budgets without charging successes; only the
+	// post-auth per-token window below limits successful event creation.
+	if s.preAuthLimited(r) {
 		tooManyRequests(w)
 		return
 	}

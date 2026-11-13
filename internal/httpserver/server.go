@@ -130,19 +130,18 @@ type requestWindow struct {
 	Count   int
 }
 
-// Pre-auth rate limiting is keyed by client IP (a bounded identifier), never
-// by the presented token: distinct invalid tokens must not mint fresh windows
-// or unbounded map entries. Per-token windows apply only after authentication
-// succeeds. Failure budgets (per IP and global) turn sustained guessing into
-// 429s while valid credentials keep working.
+// Pre-auth rate limiting never charges a request before authentication
+// succeeds: distinct invalid tokens must not mint fresh windows or unbounded
+// map entries, and valid credentials sharing one egress IP must not consume
+// each other's budget. Before auth the server only reads the failure budgets
+// (a pure lookup that mints no state); per-token windows apply only after
+// authentication succeeds. Failures counted by failedAuthLimited turn
+// sustained guessing into 429s while valid credentials keep working.
 const (
 	rateLimitWindow = time.Minute
 	// Hard cap on limiter state. Eviction runs only when inserting a new key
 	// into a full map, so steady-state requests stay O(1).
 	rateLimitMaxEntries = 4096
-
-	preAuthIngestPerIPLimit = 120
-	preAuthAgentPerIPLimit  = 60
 
 	postAuthIngestPerTokenLimit = 1200
 	postAuthAgentPerTokenLimit  = 600
@@ -400,7 +399,10 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	if !s.allowRequest("preauth:ingest:"+clientIP(r), preAuthIngestPerIPLimit) {
+	// Gate on the failure budgets without charging successes: valid tokens
+	// sharing an egress IP must not consume each other's budget. Only the
+	// post-auth per-token window below limits successful ingest.
+	if s.preAuthLimited(r) {
 		tooManyRequests(w)
 		return
 	}
@@ -590,6 +592,30 @@ func (s *Server) failedAuthLimited(r *http.Request) bool {
 	return !ipOK || !globalOK
 }
 
+// preAuthLimited reports whether a not-yet-authenticated request must back
+// off, without charging it to any success-affecting bucket. It only reads the
+// failure budgets: sustained invalid-credential floods trip the per-IP or
+// global failure budget (counted by failedAuthLimited), while valid
+// credentials never consume pre-auth state, so apps sharing one egress IP
+// keep their full post-auth per-token windows.
+func (s *Server) preAuthLimited(r *http.Request) bool {
+	s.limitMu.Lock()
+	defer s.limitMu.Unlock()
+	now := time.Now()
+	return s.overBudgetLocked("authfail:ip:"+clientIP(r), failedAuthPerIPLimit, now) ||
+		s.overBudgetLocked("authfail:global", failedAuthGlobalLimit, now)
+}
+
+// overBudgetLocked reports whether key's window is currently exhausted,
+// without recording a hit. A pure read: it never grows the map.
+func (s *Server) overBudgetLocked(key string, limit int, now time.Time) bool {
+	window, ok := s.limits[key]
+	if !ok || now.Sub(window.Started) >= rateLimitWindow {
+		return false
+	}
+	return window.Count >= limit
+}
+
 func tooManyRequests(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "60")
 	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
@@ -715,7 +741,9 @@ func (s *Server) agentUser(w http.ResponseWriter, r *http.Request) (int64, bool)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return 0, false
 	}
-	if !s.allowRequest("preauth:agent:"+clientIP(r), preAuthAgentPerIPLimit) {
+	// Gate on the failure budgets without charging successes; only the
+	// post-auth per-token window below limits valid agent traffic.
+	if s.preAuthLimited(r) {
 		tooManyRequests(w)
 		return 0, false
 	}

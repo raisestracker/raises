@@ -19,7 +19,9 @@ func (s *Server) accountKeyUser(w http.ResponseWriter, r *http.Request) (userID 
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return 0, "", false
 	}
-	if !s.allowRequest("preauth:agentkeys:"+clientIP(r), preAuthAgentPerIPLimit) {
+	// Gate on the failure budgets without charging successes; only the
+	// post-auth per-token window below limits valid account-key traffic.
+	if s.preAuthLimited(r) {
 		tooManyRequests(w)
 		return 0, "", false
 	}
