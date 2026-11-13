@@ -48,8 +48,11 @@ jobs:
   deploy:
     needs: [go, docker, acceptance]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    # Self-hosted deploy pool, already on the tailnet as tag:deploy, so
+    # KAMAL_HOST (tailnet-only MagicDNS) resolves with no Tailscale join step.
+    runs-on: lbl-deploy
     environment: production
+    timeout-minutes: 45
     concurrency:
       group: production
       cancel-in-progress: false
@@ -61,6 +64,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0 # release-tag needs tags and history
+      # The deploy pool image carries no Ruby; install it the fleet-standard
+      # way (cf. nationalparkplanner, cartoonie) before gem-installing Kamal.
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: "3.4"
       - name: Install Kamal
         run: |
           gem install --user-install --no-document kamal -v "$KAMAL_VERSION"
