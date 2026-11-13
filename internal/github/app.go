@@ -148,6 +148,18 @@ func (c *AppClient) UserInstallations(ctx context.Context, token string) ([]Inst
 	return out.Installations, err
 }
 
+// UserInstallationRepositories lists the repositories inside one installation
+// that the given user token can see. Unlike Repositories (installation
+// token, full list), this is scoped to the linker's own GitHub access, so
+// bindable repos never exceed what the linker can read.
+func (c *AppClient) UserInstallationRepositories(ctx context.Context, userToken string, installationID int64) ([]Repository, error) {
+	var out struct {
+		Repositories []Repository `json:"repositories"`
+	}
+	err := c.userRequest(ctx, userToken, "/user/installations/"+strconv.FormatInt(installationID, 10)+"/repositories?per_page=100", &out)
+	return out.Repositories, err
+}
+
 func (c *AppClient) userRequest(ctx context.Context, token, path string, out any) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	c.apiHeaders(req, token)

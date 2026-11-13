@@ -42,6 +42,16 @@ func newDashFixture(t *testing.T) dashFixture {
 	if err := store.AssignLegacyProjects(ctx, user.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertInstallation(ctx, user.ID, 9001, "demo", "User", "selected", "active", []inbox.GitHubRepository{{ID: 7001, InstallationID: 9001, FullName: "example/widget"}}); err != nil {
+		t.Fatal(err)
+	}
+	widget, err := store.ProjectBySlug(ctx, user.ID, "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindProjectRepository(ctx, user.ID, widget.ID, 7001); err != nil {
+		t.Fatal(err)
+	}
 	sessionToken, _, err := store.CreateSession(ctx, user.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +161,7 @@ func TestProjectPageStatusFilterAndPagination(t *testing.T) {
 	if _, err := f.store.Ack(ctx, groups[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := f.store.ResolveByIssue(ctx, "example/widget", 0); err != nil || n != 0 {
+	if n, err := f.store.ResolveByIssue(ctx, 0, 0, 0); err != nil || n != 0 {
 		t.Fatalf("resolve zero issue n=%d err=%v", n, err)
 	}
 
@@ -185,7 +195,12 @@ func TestProjectPageStatusFilterAndPagination(t *testing.T) {
 
 func signedIssueEvent(t *testing.T, f dashFixture, action string, number int) int {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"action": action, "issue": map[string]any{"number": number}, "repository": map[string]any{"full_name": "example/widget"}})
+	return signedIssueEventFor(t, f, action, number, 7001, 9001)
+}
+
+func signedIssueEventFor(t *testing.T, f dashFixture, action string, number int, repositoryID, installationID int64) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"action": action, "issue": map[string]any{"number": number}, "repository": map[string]any{"id": repositoryID, "full_name": "example/widget"}, "installation": map[string]any{"id": installationID}})
 	mac := hmac.New(sha256.New, []byte("whsec"))
 	mac.Write(body)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(body))
@@ -216,6 +231,17 @@ func TestIssueClosedWebhookMarksErrorFixed(t *testing.T) {
 	other, _ := f.store.Get(ctx, groups[1].ID)
 	if other.Status != inbox.StatusOpen {
 		t.Fatalf("unrelated group changed: %s", other.Status)
+	}
+	// Same full_name under a different installation must not resolve: IDs differ.
+	if code := signedIssueEventFor(t, f, "closed", 7, 7002, 9002); code != http.StatusAccepted {
+		t.Fatalf("foreign webhook=%d", code)
+	}
+	if n, err := f.store.ReopenByIssue(ctx, 7002, 9002, 7); err != nil || n != 0 {
+		t.Fatalf("foreign reopen n=%d err=%v", n, err)
+	}
+	got, _ = f.store.Get(ctx, groups[0].ID)
+	if got.Status != inbox.StatusFixed {
+		t.Fatalf("foreign installation changed status: %+v", got)
 	}
 	if fixed := f.get("/projects/widget?status=fixed").Body.String(); strings.Count(fixed, `href="/errors/`) != 1 {
 		t.Fatal("fixed filter should list the closed issue's error")

@@ -123,30 +123,29 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 
 // ResolveByIssue marks groups fixed when their GitHub issue is closed, and
 // returns how many groups changed. Resolving also acknowledges.
-func (s *Store) ResolveByIssue(ctx context.Context, repo string, number int) (int, error) {
-	return s.setResolvedByIssue(ctx, repo, number, true)
+func (s *Store) ResolveByIssue(ctx context.Context, repositoryID, installationID int64, number int) (int, error) {
+	return s.setResolvedByIssue(ctx, repositoryID, installationID, number, true)
 }
 
 // ReopenByIssue clears the fixed state when a GitHub issue is reopened.
-func (s *Store) ReopenByIssue(ctx context.Context, repo string, number int) (int, error) {
-	return s.setResolvedByIssue(ctx, repo, number, false)
+func (s *Store) ReopenByIssue(ctx context.Context, repositoryID, installationID int64, number int) (int, error) {
+	return s.setResolvedByIssue(ctx, repositoryID, installationID, number, false)
 }
 
-func (s *Store) setResolvedByIssue(ctx context.Context, repo string, number int, resolved bool) (int, error) {
-	repo = strings.TrimSpace(repo)
-	if repo == "" || number < 1 {
+func (s *Store) setResolvedByIssue(ctx context.Context, repositoryID, installationID int64, number int, resolved bool) (int, error) {
+	if repositoryID < 1 || installationID < 1 || number < 1 {
 		return 0, nil
 	}
 	now := s.now().UTC().Unix()
 	query := `UPDATE error_groups SET resolved_at_unix = NULL
 		WHERE github_issue_number = ? AND resolved_at_unix IS NOT NULL
-		AND project_id IN (SELECT project_id FROM apps WHERE lower(github_repo) = lower(?))`
-	args := []any{number, repo}
+		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
+	args := []any{number, repositoryID, installationID}
 	if resolved {
 		query = `UPDATE error_groups SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
 		WHERE github_issue_number = ? AND resolved_at_unix IS NULL
-		AND project_id IN (SELECT project_id FROM apps WHERE lower(github_repo) = lower(?))`
-		args = []any{now, now, number, repo}
+		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
+		args = []any{now, now, number, repositoryID, installationID}
 	}
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {

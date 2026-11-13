@@ -880,7 +880,19 @@ func (s *Store) RevokeProjectToken(ctx context.Context, userID int64, projectID,
 	return nil
 }
 
+// ErrInstallationTaken refuses a silent cross-account takeover: the
+// installation is already linked to a different Raises user.
+var ErrInstallationTaken = errors.New("github installation is already linked to another account")
+
 func (s *Store) UpsertInstallation(ctx context.Context, userID int64, installationID int64, account, targetType, selection, status string, repos []GitHubRepository) error {
+	var existing int64
+	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM github_installations WHERE installation_id=?`, installationID).Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && existing != userID {
+		return ErrInstallationTaken
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -896,6 +908,9 @@ func (s *Store) UpsertInstallation(ctx context.Context, userID int64, installati
 	}
 	for _, repo := range repos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO github_repositories(repository_id,installation_id,full_name,active,updated_at_unix) VALUES(?,?,?,1,?) ON CONFLICT(repository_id) DO UPDATE SET installation_id=excluded.installation_id,full_name=excluded.full_name,active=1,updated_at_unix=excluded.updated_at_unix`, repo.ID, installationID, repo.FullName, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE apps SET github_repo=?,github_installation_id=?,updated_at_unix=? WHERE github_repository_id=?`, repo.FullName, installationID, now, repo.ID); err != nil {
 			return err
 		}
 	}
