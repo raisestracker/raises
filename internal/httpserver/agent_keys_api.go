@@ -19,13 +19,16 @@ func (s *Server) accountKeyUser(w http.ResponseWriter, r *http.Request) (userID 
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return 0, "", false
 	}
-	if !s.allowRequest("agentkeys:"+inbox.HashToken(token), 60) {
-		w.Header().Set("Retry-After", "60")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	if !s.allowRequest("preauth:agentkeys:"+clientIP(r), preAuthAgentPerIPLimit) {
+		tooManyRequests(w)
 		return 0, "", false
 	}
 	userID, keyID, err := s.store.AuthenticateAccountKey(r.Context(), token)
 	if err == nil {
+		if !s.allowRequest("agentkeys:token:"+inbox.HashToken(token), postAuthAgentPerTokenLimit) {
+			tooManyRequests(w)
+			return 0, "", false
+		}
 		return userID, keyID, true
 	}
 	if !errors.Is(err, inbox.ErrUnauthorized) {
@@ -35,6 +38,10 @@ func (s *Server) accountKeyUser(w http.ResponseWriter, r *http.Request) (userID 
 	}
 	if agentID, agentErr := s.store.AuthenticateAgent(r.Context(), token); agentErr == nil && agentID != 0 {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "account key required"})
+		return 0, "", false
+	}
+	if s.failedAuthLimited(r) {
+		tooManyRequests(w)
 		return 0, "", false
 	}
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})

@@ -16,9 +16,27 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	if !s.allowRequest("ingest:"+inbox.HashToken(token), 120) {
-		w.Header().Set("Retry-After", "60")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	if !s.allowRequest("preauth:ingest:"+clientIP(r), preAuthIngestPerIPLimit) {
+		tooManyRequests(w)
+		return
+	}
+	// Authenticate before minting any per-token state: invalid tokens must
+	// neither bypass the limiter nor grow it. AppByToken is the same lookup
+	// CreateEvent performs below, so invalid credentials fail identically here.
+	if _, err := s.store.AppByToken(r.Context(), token); err != nil {
+		if errors.Is(err, inbox.ErrUnauthorized) {
+			if s.failedAuthLimited(r) {
+				tooManyRequests(w)
+				return
+			}
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			return
+		}
+		s.writeStoreError(w, err)
+		return
+	}
+	if !s.allowRequest("ingest:token:"+inbox.HashToken(token), postAuthIngestPerTokenLimit) {
+		tooManyRequests(w)
 		return
 	}
 	var req inbox.EventInput
