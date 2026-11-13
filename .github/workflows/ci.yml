@@ -61,6 +61,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0 # release-tag needs tags and history
+      # KAMAL_HOST is tailnet-only (MagicDNS), so join the tailnet before
+      # anything SSHes to the host (kamal deploy, app version).
+      - name: Connect to tailnet
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
       - name: Install Kamal
         run: |
           gem install --user-install --no-document kamal -v "$KAMAL_VERSION"
