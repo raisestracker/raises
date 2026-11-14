@@ -48,7 +48,9 @@ jobs:
   deploy:
     needs: [go, docker, acceptance]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    # lbl-deploy is on the tailnet, so it resolves and reaches labountylabs-rails.
+    # GitHub-hosted runners can't (getaddrinfo: Temporary failure in name resolution).
+    runs-on: lbl-deploy
     environment: production
     concurrency:
       group: production
@@ -61,6 +63,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0 # release-tag needs tags and history
+      - uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
+        with:
+          ruby-version: "3.3"
       - name: Install Kamal
         run: |
           gem install --user-install --no-document kamal -v "$KAMAL_VERSION"
