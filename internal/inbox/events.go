@@ -108,6 +108,39 @@ func (s *Store) ConfigureOperatorNtfy(ownerUserID int64, enabled bool) {
 	s.operatorNtfyEnabled = enabled
 }
 
+// SetOperatorNtfyMinNoticeLevel sets the lowest notice level that is pushed to the operator's phone
+// (info, warning or error). Errors and regressions are always pushed; quieter notices stay in
+// /v1/events and in configured webhooks. Unknown values fall back to warning.
+func (s *Store) SetOperatorNtfyMinNoticeLevel(level string) {
+	if !supportedEventLevels[level] {
+		level = "warning"
+	}
+	s.operatorNtfyMinNotice = level
+}
+
+var noticeLevelRank = map[string]int{"info": 0, "warning": 1, "error": 2}
+
+// noticePushed reports whether a notice.created payload is loud enough for the operator's ntfy.
+func (s *Store) noticePushed(payload []byte) bool {
+	min := s.operatorNtfyMinNotice
+	if min == "" {
+		min = "warning"
+	}
+	var body struct {
+		Notice struct {
+			Level string `json:"level"`
+		} `json:"notice"`
+	}
+	if json.Unmarshal(payload, &body) != nil {
+		return true // unreadable: push rather than lose it
+	}
+	level, ok := noticeLevelRank[body.Notice.Level]
+	if !ok {
+		return true
+	}
+	return level >= noticeLevelRank[min]
+}
+
 func (s *Store) initializeEvents(ctx context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS events (
