@@ -10,30 +10,105 @@ permissions:
 
 jobs:
   go:
+    name: PR tests
     runs-on: lbl-linux
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.11"
           cache: true
-      - run: go test -race ./...
-      - run: go vet ./...
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+      # Same checks as the manual bin/deploy, so the deploy gate matches it.
+      # The containerized acceptance suite runs in the acceptance job below
+      # (lbl-linux has no container runtime); deploy gates on all three jobs.
+      - run: bin/check
+        env:
+          SKIP_ACCEPTANCE: "1"
 
   docker:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: docker compose --env-file .env.example config
       - run: docker compose --env-file .env.example up --build -d
       - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/healthz
       - run: curl --fail http://127.0.0.1:8080/readyz
       - if: always()
         run: docker compose --env-file .env.example down --volumes
+
+  # Deploys the exact commit that just passed the jobs above. Runs only on
+  # pushes to master (i.e. PR merges); PRs and red runs never reach it.
+  deploy:
+    needs: [go, docker, acceptance]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: write # push the release tag and cut the GitHub release
+    env:
+      KAMAL_VERSION: "2.12.0"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0 # release-tag needs tags and history
+      - name: Install Kamal
+        run: |
+          gem install --user-install --no-document kamal -v "$KAMAL_VERSION"
+          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      # KAMAL_DEPLOY_ENV holds the full .kamal/deploy.env (non-secret
+      # settings), so CI deploys with the same config as bin/deploy.
+      - name: Prepare Kamal config
+        env:
+          KAMAL_DEPLOY_ENV: ${{ vars.KAMAL_DEPLOY_ENV }}
+        run: |
+          : "${KAMAL_DEPLOY_ENV:?production variable KAMAL_DEPLOY_ENV is not set}"
+          printf '%s\n' "$KAMAL_DEPLOY_ENV" > .kamal/deploy.env
+          cp .kamal/secrets.example .kamal/secrets
+      - name: Deploy and smoke test
+        env:
+          GITHUB_APP_ID: ${{ secrets.RAISES_GITHUB_APP_ID }}
+          GITHUB_APP_CLIENT_ID: ${{ secrets.RAISES_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.RAISES_GITHUB_APP_CLIENT_SECRET }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.RAISES_GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.RAISES_GITHUB_APP_WEBHOOK_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          WEBHOOK_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_ENCRYPTION_KEY }}
+        run: bin/release
+      - name: Verify live version
+        run: |
+          set -a; . .kamal/deploy.env; set +a
+          live="$(kamal app version)"
+          echo "live: $live  expected: $GITHUB_SHA"
+          case "$live" in *"$GITHUB_SHA"*) ;; *) echo "live container is not on $GITHUB_SHA" >&2; exit 1 ;; esac
+      # Tag the deployed commit (minor on feat:, else patch) and cut a GitHub
+      # release with notes from the merged PRs. Runs only after the live
+      # version check above passed, so the tag always matches production.
+      - name: Tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bin/release-tag
 
   acceptance:
     runs-on: ubuntu-latest
@@ -47,8 +122,8 @@ jobs:
       run:
         working-directory: acceptance
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
@@ -61,7 +136,7 @@ jobs:
           CI: "true"
           HOME: /root
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: acceptance-report
           path: |

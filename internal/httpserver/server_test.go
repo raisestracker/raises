@@ -323,6 +323,12 @@ func TestAccountKeyAgentKeyAPI(t *testing.T) {
 	if rec := call(http.MethodDelete, "/v1/agent-keys/"+minted.Key.ID, accountToken, ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("double revoke=%d %s", rec.Code, rec.Body.String())
 	}
+
+	// Deliberate contract: the account key also works on the data plane as an
+	// ordinary same-account key.
+	if rec := call(http.MethodGet, "/v1/errors", accountToken, ""); rec.Code != http.StatusOK {
+		t.Fatalf("account key data plane=%d %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {

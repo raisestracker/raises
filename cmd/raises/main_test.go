@@ -53,6 +53,26 @@ func TestLoadConfigRejectsEnabledReportingWithoutRequiredValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesLegacyTokenRetirement(t *testing.T) {
+	setGenericConfigEnv(t)
+	t.Setenv("DISABLE_LEGACY_TOKENS", "1")
+	conf, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conf.disableLegacyTokens {
+		t.Fatal("DISABLE_LEGACY_TOKENS=1 must retire legacy tokens")
+	}
+	t.Setenv("DISABLE_LEGACY_TOKENS", "yes")
+	conf, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.disableLegacyTokens {
+		t.Fatal("only the exact value 1 retires legacy tokens")
+	}
+}
+
 func TestLoadConfigRejectsNtfyWithoutConfiguredOwner(t *testing.T) {
 	setGenericConfigEnv(t)
 	t.Setenv("NTFY_ENABLED", "1")

@@ -1,0 +1,8 @@
+# Paths that need Clay's review (deploy, CI, secrets, auth, billing). Everything else merges on green CI.
+# Managed by data/merge-simplify/apply.sh.
+/.github/ @clayton
+/.kamal/ @clayton
+/config/deploy*.yml @clayton
+/bin/deploy* @clayton
+/Dockerfile* @clayton
+/internal/httpserver/auth_web.go @clayton

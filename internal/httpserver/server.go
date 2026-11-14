@@ -10,7 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -24,10 +26,13 @@ import (
 
 type Store interface {
 	Ping(context.Context) error
+	// Ingest is token-scoped by the project credential; every other
+	// error-group access goes through a ForUser wrapper below. The unscoped
+	// inbox primitives (List, Get, Notices, Ack, Suppress, Unsuppress) are
+	// deliberately absent: a handler wired to one would bypass tenant
+	// scoping, so keeping them out of the interface makes that a compile
+	// error instead of a review catch. See TestStoreInterfaceHasNoUnscopedReads.
 	Ingest(context.Context, string, inbox.Notice) (inbox.IngestResult, error)
-	Get(context.Context, int64) (inbox.Group, error)
-	Notices(context.Context, int64, int) ([]inbox.Notice, error)
-	Ack(context.Context, int64) (inbox.Group, error)
 	UpsertGitHubUser(context.Context, int64, string, string, string) (inbox.User, error)
 	AssignLegacyProjects(context.Context, int64) error
 	CreateSession(context.Context, int64, time.Duration) (string, inbox.Session, error)
@@ -38,6 +43,7 @@ type Store interface {
 	CreateAgentKey(context.Context, int64, string) (string, inbox.AgentKey, error)
 	CreateAccountKey(context.Context, int64, string) (string, inbox.AgentKey, error)
 	AuthenticateAgent(context.Context, string) (int64, error)
+	AppByToken(context.Context, string) (inbox.App, error)
 	AuthenticateAccountKey(context.Context, string) (int64, string, error)
 	MintAgentKey(context.Context, int64, string, string) (string, inbox.AgentKey, error)
 	ListAgentKeys(context.Context, int64) ([]inbox.AgentKey, error)
@@ -54,8 +60,8 @@ type Store interface {
 	DashboardForUser(context.Context, int64) (inbox.DashboardStats, error)
 	ProjectBySlug(context.Context, int64, string) (inbox.Project, error)
 	ProjectCounts(context.Context, string) (int, int, int, error)
-	ResolveByIssue(context.Context, string, int) (int, error)
-	ReopenByIssue(context.Context, string, int) (int, error)
+	ResolveByIssue(context.Context, int64, int64, int) (int, error)
+	ReopenByIssue(context.Context, int64, int64, int) (int, error)
 	GetForUser(context.Context, int64, int64) (inbox.Group, error)
 	NoticesForUser(context.Context, int64, int64, int) ([]inbox.Notice, error)
 	AckForUser(context.Context, int64, int64) (inbox.Group, error)
@@ -91,6 +97,7 @@ type GitHubApp interface {
 	UserInstallations(context.Context, string) ([]gh.Installation, error)
 	Installation(context.Context, int64) (gh.Installation, error)
 	Repositories(context.Context, int64) ([]gh.Repository, error)
+	UserInstallationRepositories(context.Context, string, int64) ([]gh.Repository, error)
 }
 
 type OperationalReporter interface {
@@ -125,6 +132,26 @@ type requestWindow struct {
 	Started time.Time
 	Count   int
 }
+
+// Pre-auth rate limiting never charges a request before authentication
+// succeeds: distinct invalid tokens must not mint fresh windows or unbounded
+// map entries, and valid credentials sharing one egress IP must not consume
+// each other's budget. Before auth the server only reads the failure budgets
+// (a pure lookup that mints no state); per-token windows apply only after
+// authentication succeeds. Failures counted by failedAuthLimited turn
+// sustained guessing into 429s while valid credentials keep working.
+const (
+	rateLimitWindow = time.Minute
+	// Hard cap on limiter state. Eviction runs only when inserting a new key
+	// into a full map, so steady-state requests stay O(1).
+	rateLimitMaxEntries = 4096
+
+	postAuthIngestPerTokenLimit = 1200
+	postAuthAgentPerTokenLimit  = 600
+
+	failedAuthPerIPLimit  = 30
+	failedAuthGlobalLimit = 2000
+)
 
 func New(store Store, agentToken string, logger *slog.Logger, bodyLimit int64) *Server {
 	return NewWithConfig(store, logger, bodyLimit, Config{LegacyAgentToken: agentToken})
@@ -204,9 +231,35 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("POST /settings/issue-jobs/{id}/retry", s.retryBrowserIssueJob)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /github/setup", s.githubSetup)
+	mux.HandleFunc("POST /github/setup", s.githubSetupPost)
 	mux.HandleFunc("POST /webhooks/github", s.githubWebhook)
-	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, mux))
+	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, secureHeaders(mux)))
 	return s
+}
+
+// contentSecurityPolicy pins the only third-party code the console runs:
+// Google Fonts (every page) and Google Tag Manager (the public homepage).
+// Inline scripts stay allowed because the homepage gtag snippet and the
+// settings copy/mint script are inline; moving them to nonces is follow-up
+// work, not this change. Everything else — foreign scripts and styles,
+// plugins, frames, off-origin form targets — is denied.
+const contentSecurityPolicy = `default-src 'self'; ` +
+	`script-src 'self' https://www.googletagmanager.com 'unsafe-inline'; ` +
+	`style-src 'self' https://fonts.googleapis.com; ` +
+	`font-src 'self' https://fonts.gstatic.com; ` +
+	`img-src 'self' data:; ` +
+	`connect-src 'self' https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com; ` +
+	`object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`
+
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -375,9 +428,31 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	if !s.allowRequest("ingest:"+inbox.HashToken(token), 120) {
-		w.Header().Set("Retry-After", "60")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	// Gate on the failure budgets without charging successes: valid tokens
+	// sharing an egress IP must not consume each other's budget. Only the
+	// post-auth per-token window below limits successful ingest.
+	if s.preAuthLimited(r) {
+		tooManyRequests(w)
+		return
+	}
+	// Authenticate before minting any per-token state: invalid tokens must
+	// neither bypass the limiter nor grow it. AppByToken is the same lookup
+	// Ingest performs below, so invalid credentials fail identically here.
+	if _, err := s.store.AppByToken(r.Context(), token); err != nil {
+		if errors.Is(err, inbox.ErrUnauthorized) {
+			if s.failedAuthLimited(r) {
+				tooManyRequests(w)
+				return
+			}
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			return
+		}
+		s.logger.Error("auth notice", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store notice"})
+		return
+	}
+	if !s.allowRequest("ingest:token:"+inbox.HashToken(token), postAuthIngestPerTokenLimit) {
+		tooManyRequests(w)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.bodyLimit))
@@ -469,8 +544,11 @@ func (s *Server) allowRequest(key string, limit int) bool {
 	s.limitMu.Lock()
 	defer s.limitMu.Unlock()
 	now := time.Now()
-	window := s.limits[key]
-	if window.Started.IsZero() || now.Sub(window.Started) >= time.Minute {
+	window, ok := s.limits[key]
+	if !ok || now.Sub(window.Started) >= rateLimitWindow {
+		if !ok && len(s.limits) >= rateLimitMaxEntries {
+			s.evictRateLimitEntryLocked(now)
+		}
 		window = requestWindow{Started: now}
 	}
 	if window.Count >= limit {
@@ -478,14 +556,98 @@ func (s *Server) allowRequest(key string, limit int) bool {
 	}
 	window.Count++
 	s.limits[key] = window
-	if len(s.limits) > 10000 {
-		for k, v := range s.limits {
-			if now.Sub(v.Started) > 2*time.Minute {
-				delete(s.limits, k)
-			}
+	return true
+}
+
+// evictRateLimitEntryLocked frees at least one slot for a new key. Expired
+// windows go first; when none are expired the oldest window is evicted. It
+// runs only on insert into a full map, so per-request cost stays flat no
+// matter how many distinct keys arrive.
+func (s *Server) evictRateLimitEntryLocked(now time.Time) {
+	for k, v := range s.limits {
+		if now.Sub(v.Started) >= rateLimitWindow {
+			delete(s.limits, k)
 		}
 	}
-	return true
+	if len(s.limits) < rateLimitMaxEntries {
+		return
+	}
+	oldest := ""
+	var oldestStart time.Time
+	first := true
+	for k, v := range s.limits {
+		if first || v.Started.Before(oldestStart) {
+			oldest, oldestStart, first = k, v.Started, false
+		}
+	}
+	if oldest != "" {
+		delete(s.limits, oldest)
+	}
+}
+
+// clientIP returns the bounded identifier used to rate-limit unauthenticated
+// callers. Raises runs behind kamal-proxy, which appends the connecting
+// address to X-Forwarded-For, so the last entry is the only one the proxy
+// vouches for; entries to its left are caller-supplied and ignored. The
+// header is trusted only when the TCP peer is the proxy itself
+// (loopback/link-local/private, i.e. the host or container network);
+// otherwise the peer address is used, so a client reaching the app directly
+// cannot rotate the header to mint fresh buckets.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		if peer, err := netip.ParseAddr(host); err == nil {
+			peer = peer.Unmap().WithZone("")
+			if peer.IsLoopback() || peer.IsPrivate() || peer.IsLinkLocalUnicast() {
+				if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+					parts := strings.Split(xff, ",")
+					if last, err := netip.ParseAddr(strings.TrimSpace(parts[len(parts)-1])); err == nil {
+						return last.Unmap().WithZone("").String()
+					}
+				}
+			}
+			return peer.String()
+		}
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// failedAuthLimited records an authentication failure against the per-IP and
+// global failure budgets. It reports true when the caller is over either
+// budget and must back off (429) instead of getting another 401.
+func (s *Server) failedAuthLimited(r *http.Request) bool {
+	ipOK := s.allowRequest("authfail:ip:"+clientIP(r), failedAuthPerIPLimit)
+	globalOK := s.allowRequest("authfail:global", failedAuthGlobalLimit)
+	return !ipOK || !globalOK
+}
+
+// preAuthLimited reports whether a not-yet-authenticated request must back
+// off, without charging it to any success-affecting bucket. It only reads the
+// failure budgets: sustained invalid-credential floods trip the per-IP or
+// global failure budget (counted by failedAuthLimited), while valid
+// credentials never consume pre-auth state, so apps sharing one egress IP
+// keep their full post-auth per-token windows.
+func (s *Server) preAuthLimited(r *http.Request) bool {
+	s.limitMu.Lock()
+	defer s.limitMu.Unlock()
+	now := time.Now()
+	return s.overBudgetLocked("authfail:ip:"+clientIP(r), failedAuthPerIPLimit, now) ||
+		s.overBudgetLocked("authfail:global", failedAuthGlobalLimit, now)
+}
+
+// overBudgetLocked reports whether key's window is currently exhausted,
+// without recording a hit. A pure read: it never grows the map.
+func (s *Server) overBudgetLocked(key string, limit int, now time.Time) bool {
+	window, ok := s.limits[key]
+	if !ok || now.Sub(window.Started) >= rateLimitWindow {
+		return false
+	}
+	return window.Count >= limit
+}
+
+func tooManyRequests(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "60")
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 }
 
 func (s *Server) getError(w http.ResponseWriter, r *http.Request) {
@@ -608,17 +770,30 @@ func (s *Server) agentUser(w http.ResponseWriter, r *http.Request) (int64, bool)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return 0, false
 	}
-	if !s.allowRequest("agent:"+inbox.HashToken(token), 60) {
-		w.Header().Set("Retry-After", "60")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	// Gate on the failure budgets without charging successes; only the
+	// post-auth per-token window below limits valid agent traffic.
+	if s.preAuthLimited(r) {
+		tooManyRequests(w)
 		return 0, false
 	}
 	if s.agentToken != "" && token == s.agentToken {
+		if !s.allowRequest("agent:token:"+inbox.HashToken(token), postAuthAgentPerTokenLimit) {
+			tooManyRequests(w)
+			return 0, false
+		}
 		return s.config.LegacyOwnerID, true
 	}
 	userID, err := s.store.AuthenticateAgent(r.Context(), token)
 	if err != nil {
+		if s.failedAuthLimited(r) {
+			tooManyRequests(w)
+			return 0, false
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+		return 0, false
+	}
+	if !s.allowRequest("agent:token:"+inbox.HashToken(token), postAuthAgentPerTokenLimit) {
+		tooManyRequests(w)
 		return 0, false
 	}
 	return userID, true

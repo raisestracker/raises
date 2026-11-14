@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -115,6 +116,10 @@ func (s *Server) finishGitHubAuth(w http.ResponseWriter, r *http.Request) {
 	if purpose.Value == "install" {
 		if err := s.finishInstallation(r, token, user.ID); err != nil {
 			s.logger.Error("finish github installation", "error", err)
+			if errors.Is(err, inbox.ErrInstallationTaken) {
+				http.Error(w, "installation is already linked to another account", http.StatusConflict)
+				return
+			}
 			http.Error(w, "could not connect GitHub installation", http.StatusBadRequest)
 			return
 		}
@@ -155,15 +160,22 @@ func (s *Server) finishInstallation(r *http.Request, userToken string, userID in
 	if !allowed {
 		return fmt.Errorf("installation is not accessible")
 	}
-	return s.syncInstallation(r, userID, installationID)
+	return s.syncInstallation(r, userID, installationID, userToken)
 }
 
-func (s *Server) syncInstallation(r *http.Request, userID, installationID int64) error {
+func (s *Server) syncInstallation(r *http.Request, userID, installationID int64, userToken string) error {
 	installation, err := s.config.GitHubApp.Installation(r.Context(), installationID)
 	if err != nil {
 		return err
 	}
-	repos, err := s.config.GitHubApp.Repositories(r.Context(), installationID)
+	var repos []github.Repository
+	if userToken != "" {
+		// User-initiated link: list only repos the linker can read.
+		repos, err = s.config.GitHubApp.UserInstallationRepositories(r.Context(), userToken, installationID)
+	} else {
+		// Webhook resync has no user token; refresh names from the full list.
+		repos, err = s.config.GitHubApp.Repositories(r.Context(), installationID)
+	}
 	if err != nil {
 		return err
 	}
@@ -178,11 +190,28 @@ func (s *Server) syncInstallation(r *http.Request, userID, installationID int64)
 	return s.store.UpsertInstallation(r.Context(), userID, installationID, installation.Account.Login, installation.TargetType, installation.RepositorySelection, status, mapped)
 }
 
+// githubSetup receives GitHub's post-install redirect. GET renders a
+// confirmation so the link step itself stays a CSRF-protected POST.
 func (s *Server) githubSetup(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.browserSession(w, r); !ok {
+	session, ok := s.browserSession(w, r)
+	if !ok {
 		return
 	}
 	id := r.URL.Query().Get("installation_id")
+	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+		http.Error(w, "invalid installation", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html><html><body><h1>Connect GitHub installation %s?</h1><form method="post" action="/github/setup"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="installation_id" value="%s"><button type="submit">Connect</button></form></body></html>`, template.HTMLEscapeString(id), template.HTMLEscapeString(session.CSRFToken), template.HTMLEscapeString(id))
+}
+
+// githubSetupPost commits the pending installation link. CSRF-checked.
+func (s *Server) githubSetupPost(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.browserPOST(w, r); !ok {
+		return
+	}
+	id := r.FormValue("installation_id")
 	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
 		http.Error(w, "invalid installation", http.StatusBadRequest)
 		return
@@ -517,6 +546,7 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			Number int `json:"number"`
 		} `json:"issue"`
 		Repository struct {
+			ID       int64  `json:"id"`
 			FullName string `json:"full_name"`
 		} `json:"repository"`
 	}
@@ -527,11 +557,13 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "issues" && (payload.Action == "closed" || payload.Action == "reopened") {
 		// A closed GitHub issue means the error was fixed; reopening undoes it.
+		// Match on repository plus installation IDs so a renamed repo, or a
+		// different repo reusing the old full_name, never resolves foreign groups.
 		var err error
 		if payload.Action == "closed" {
-			_, err = s.store.ResolveByIssue(r.Context(), payload.Repository.FullName, payload.Issue.Number)
+			_, err = s.store.ResolveByIssue(r.Context(), payload.Repository.ID, payload.Installation.ID, payload.Issue.Number)
 		} else {
-			_, err = s.store.ReopenByIssue(r.Context(), payload.Repository.FullName, payload.Issue.Number)
+			_, err = s.store.ReopenByIssue(r.Context(), payload.Repository.ID, payload.Installation.ID, payload.Issue.Number)
 		}
 		if err != nil {
 			s.logger.Error("apply github issue state", "error", err)
@@ -546,7 +578,7 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetInstallationStatus(r.Context(), payload.Installation.ID, status)
 	} else if event == "installation" || event == "installation_repositories" {
 		if userID, err := s.store.InstallationUserID(r.Context(), payload.Installation.ID); err == nil {
-			_ = s.syncInstallation(r, userID, payload.Installation.ID)
+			_ = s.syncInstallation(r, userID, payload.Installation.ID, "")
 		}
 	}
 	w.WriteHeader(http.StatusAccepted)

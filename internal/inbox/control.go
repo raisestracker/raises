@@ -554,6 +554,16 @@ func (s *Store) ClearLegacyTokens(ctx context.Context, userID int64) error {
 	return err
 }
 
+// ClearAllLegacyTokens retires every legacy static ingestion hash, whatever
+// owner it was ever assigned to (including owner 0 and owners from a previous
+// INITIAL_OWNER_GITHUB_ID). Audit: apps.token_hash is written only by the
+// legacy APP_*_TOKEN upsert path; modern projects carry an empty token_hash and
+// authenticate through project_tokens, which this leaves untouched.
+func (s *Store) ClearAllLegacyTokens(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET token_hash='' WHERE token_hash != ''`)
+	return err
+}
+
 func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (token string, session Session, err error) {
 	token, err = randomID("ses_", 32)
 	if err != nil {
@@ -784,6 +794,15 @@ func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, nam
 	return token, key, tx.Commit()
 }
 
+// AuthenticateAgent resolves any active agent key token — ordinary or account
+// (can_mint) — to its account's user ID. Account keys intentionally act as
+// ordinary same-account keys on the data plane: every data-plane endpoint
+// scopes by the returned user ID, so an account key reaches exactly the same
+// projects as any other key of the same account and nothing cross-tenant.
+// Management-only operations (mint/list/revoke under /v1/agent-keys) stay
+// behind AuthenticateAccountKey, which rejects ordinary keys. Narrowing the
+// data plane to ordinary keys would break automation hosts configured with an
+// account key, so it needs an explicit product decision first.
 func (s *Store) AuthenticateAgent(ctx context.Context, token string) (int64, error) {
 	var userID int64
 	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID)
@@ -904,6 +923,8 @@ func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug stri
 	if name == "" || len(name) > maxProjectNameLength || len(slug) > maxProjectSlugLength || !slugPattern.MatchString(slug) {
 		return Project{}, fmt.Errorf("valid name and slug are required")
 	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
 		return Project{}, err
@@ -941,6 +962,8 @@ func (s *Store) UpdateProject(ctx context.Context, userID int64, id, name string
 }
 
 func (s *Store) SetProjectArchived(ctx context.Context, userID int64, id string, archived bool) (Project, error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	project, err := s.GetProject(ctx, userID, id)
 	if err != nil {
 		return Project{}, err
@@ -977,6 +1000,8 @@ func (s *Store) CreateProjectToken(ctx context.Context, userID int64, projectID 
 	if project.ArchivedAt != nil {
 		return "", ProjectToken{}, fmt.Errorf("project is archived")
 	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_tokens WHERE project_id=? AND revoked_at_unix IS NULL`, projectID).Scan(&count); err != nil {
 		return "", ProjectToken{}, err
@@ -1014,7 +1039,19 @@ func (s *Store) RevokeProjectToken(ctx context.Context, userID int64, projectID,
 	return nil
 }
 
+// ErrInstallationTaken refuses a silent cross-account takeover: the
+// installation is already linked to a different Raises user.
+var ErrInstallationTaken = errors.New("github installation is already linked to another account")
+
 func (s *Store) UpsertInstallation(ctx context.Context, userID int64, installationID int64, account, targetType, selection, status string, repos []GitHubRepository) error {
+	var existing int64
+	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM github_installations WHERE installation_id=?`, installationID).Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && existing != userID {
+		return ErrInstallationTaken
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1030,6 +1067,9 @@ func (s *Store) UpsertInstallation(ctx context.Context, userID int64, installati
 	}
 	for _, repo := range repos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO github_repositories(repository_id,installation_id,full_name,active,updated_at_unix) VALUES(?,?,?,1,?) ON CONFLICT(repository_id) DO UPDATE SET installation_id=excluded.installation_id,full_name=excluded.full_name,active=1,updated_at_unix=excluded.updated_at_unix`, repo.ID, installationID, repo.FullName, now); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE apps SET github_repo=?,github_installation_id=?,updated_at_unix=? WHERE github_repository_id=?`, repo.FullName, installationID, now, repo.ID); err != nil {
 			return err
 		}
 	}

@@ -190,6 +190,31 @@ func TestAccountKeyMintsAgentKeysWithAuditTrail(t *testing.T) {
 	}
 }
 
+func TestAccountKeyActsAsSameAccountAgentKey(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	user, err := store.UpsertGitHubUser(ctx, 6341, "owner", "Owner", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.UpsertGitHubUser(ctx, 6342, "neighbor", "Neighbor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountToken, _, err := store.CreateAccountKey(ctx, user.ID, "CI host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberate contract: an account key authenticates on the data plane as
+	// an ordinary key of its own account — and only that account.
+	if got, err := store.AuthenticateAgent(ctx, accountToken); err != nil || got != user.ID {
+		t.Fatalf("account key must authenticate as its own account: user=%d err=%v", got, err)
+	}
+	if got, err := store.AuthenticateAgent(ctx, accountToken); err != nil || got == other.ID {
+		t.Fatalf("account key must never resolve to another account: user=%d err=%v", got, err)
+	}
+}
+
 func TestLegacySchemaMigratesInPlace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)
@@ -224,5 +249,78 @@ func TestLegacySchemaMigratesInPlace(t *testing.T) {
 		if exists, err := reopened.columnExists(context.Background(), "issue_jobs", column); err != nil || !exists {
 			t.Fatalf("issue_jobs.%s exists=%v err=%v", column, exists, err)
 		}
+	}
+}
+
+func TestInstallationRelinkByAnotherUserIsRefused(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	a, _ := store.UpsertGitHubUser(ctx, 101, "a", "", "")
+	b, _ := store.UpsertGitHubUser(ctx, 102, "b", "", "")
+	if err := store.UpsertInstallation(ctx, a.ID, 555, "org", "Organization", "all", "active", []GitHubRepository{{ID: 1, InstallationID: 555, FullName: "org/one"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertInstallation(ctx, b.ID, 555, "org", "Organization", "all", "active", []GitHubRepository{{ID: 1, InstallationID: 555, FullName: "org/one"}}); !errors.Is(err, ErrInstallationTaken) {
+		t.Fatalf("relink err=%v", err)
+	}
+	if owner, err := store.InstallationUserID(ctx, 555); err != nil || owner != a.ID {
+		t.Fatalf("owner=%d err=%v", owner, err)
+	}
+	// Same-user resync still works and refreshes the bound repo name.
+	project, err := store.CreateProject(ctx, a.ID, "One", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindProjectRepository(ctx, a.ID, project.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertInstallation(ctx, a.ID, 555, "org", "Organization", "all", "active", []GitHubRepository{{ID: 1, InstallationID: 555, FullName: "org/renamed"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetProject(ctx, a.ID, project.ID)
+	if err != nil || got.GitHubRepo != "org/renamed" {
+		t.Fatalf("after rename repo=%q err=%v", got.GitHubRepo, err)
+	}
+}
+
+func TestResolveByIssueMatchesRepositoryAndInstallationIDs(t *testing.T) {
+	store, filer := testStore(t)
+	_ = filer
+	ctx := context.Background()
+	a, _ := store.UpsertGitHubUser(ctx, 201, "a", "", "")
+	if err := store.UpsertInstallation(ctx, a.ID, 901, "org", "Organization", "all", "active", []GitHubRepository{{ID: 701, InstallationID: 901, FullName: "org/shared"}}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.CreateProject(ctx, a.ID, "Svc", "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindProjectRepository(ctx, a.ID, project.ID, 701); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := store.CreateProjectToken(ctx, a.ID, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.Ingest(ctx, token, Notice{Class: "Boom", Backtrace: []string{"app/x.rb:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetIssueForTest(ctx, res.Group.ID, 9); err != nil {
+		t.Fatal(err)
+	}
+	// Same full_name under another installation must not resolve.
+	if n, err := store.ResolveByIssue(ctx, 702, 902, 9); err != nil || n != 0 {
+		t.Fatalf("foreign resolve n=%d err=%v", n, err)
+	}
+	if n, err := store.ResolveByIssue(ctx, 701, 901, 9); err != nil || n != 1 {
+		t.Fatalf("own resolve n=%d err=%v", n, err)
+	}
+	// Reopen requires the same IDs.
+	if n, err := store.ReopenByIssue(ctx, 702, 902, 9); err != nil || n != 0 {
+		t.Fatalf("foreign reopen n=%d err=%v", n, err)
+	}
+	if n, err := store.ReopenByIssue(ctx, 701, 901, 9); err != nil || n != 1 {
+		t.Fatalf("own reopen n=%d err=%v", n, err)
 	}
 }
