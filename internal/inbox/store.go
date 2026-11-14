@@ -190,8 +190,7 @@ func (s *Store) initialize(ctx context.Context) error {
 			acked_at_unix INTEGER,
 			suppressed_at_unix INTEGER,
 			resolved_at_unix INTEGER,
-			sample_json TEXT NOT NULL,
-			UNIQUE(app_name, env, fingerprint)
+			sample_json TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS notices (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,6 +208,9 @@ func (s *Store) initialize(ctx context.Context) error {
 		}
 	}
 	if err := s.ensureLegacyColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureTenantIsolatedGroups(ctx); err != nil {
 		return err
 	}
 	if err := s.initializeControlPlane(ctx); err != nil {
@@ -311,8 +313,8 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
 		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
-		FROM error_groups WHERE app_name = ? AND env = ? AND fingerprint = ?
-	`, app.Name, notice.Env, fp).Scan(
+		FROM error_groups WHERE project_id = ? AND env = ? AND fingerprint = ?
+	`, app.ID, notice.Env, fp).Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
 		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
