@@ -60,7 +60,7 @@ func TestCrossTenantIngestIsolationHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := New(store, "", slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20).Handler()
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{}).Handler()
 	notice := `{"env":"production","revision":"aaa","error":{"class":"RuntimeError","message":"boom","backtrace":["app/jobs/work_job.rb:4:in ` + "`perform`" + `"]},"context":{"api_key":"DUMMY-VALUE"}}`
 
 	postNotice := func(token string) (int, inbox.IngestResult) {
