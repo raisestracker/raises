@@ -105,8 +105,6 @@ type OperationalReporter interface {
 }
 
 type Config struct {
-	LegacyAgentToken     string
-	LegacyOwnerID        int64
 	InitialOwnerGitHubID int64
 	BaseURL              string
 	GitHubAppSlug        string
@@ -117,15 +115,14 @@ type Config struct {
 }
 
 type Server struct {
-	store      Store
-	agentToken string
-	logger     *slog.Logger
-	bodyLimit  int64
-	handler    http.Handler
-	config     Config
-	stylePath  string
-	limitMu    sync.Mutex
-	limits     map[string]requestWindow
+	store     Store
+	logger    *slog.Logger
+	bodyLimit int64
+	handler   http.Handler
+	config    Config
+	stylePath string
+	limitMu   sync.Mutex
+	limits    map[string]requestWindow
 }
 
 type requestWindow struct {
@@ -153,19 +150,14 @@ const (
 	failedAuthGlobalLimit = 2000
 )
 
-func New(store Store, agentToken string, logger *slog.Logger, bodyLimit int64) *Server {
-	return NewWithConfig(store, logger, bodyLimit, Config{LegacyAgentToken: agentToken})
-}
-
 func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Config) *Server {
 	s := &Server{
-		store:      store,
-		agentToken: config.LegacyAgentToken,
-		logger:     logger,
-		bodyLimit:  bodyLimit,
-		config:     config,
-		stylePath:  embeddedStylesheetPath(),
-		limits:     map[string]requestWindow{},
+		store:     store,
+		logger:    logger,
+		bodyLimit: bodyLimit,
+		config:    config,
+		stylePath: embeddedStylesheetPath(),
+		limits:    map[string]requestWindow{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
@@ -776,13 +768,8 @@ func (s *Server) agentUser(w http.ResponseWriter, r *http.Request) (int64, bool)
 		tooManyRequests(w)
 		return 0, false
 	}
-	if s.agentToken != "" && token == s.agentToken {
-		if !s.allowRequest("agent:token:"+inbox.HashToken(token), postAuthAgentPerTokenLimit) {
-			tooManyRequests(w)
-			return 0, false
-		}
-		return s.config.LegacyOwnerID, true
-	}
+	// Static legacy agent tokens were retired: only DB-backed agent and
+	// account keys authenticate here.
 	userID, err := s.store.AuthenticateAgent(r.Context(), token)
 	if err != nil {
 		if s.failedAuthLimited(r) {

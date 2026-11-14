@@ -30,7 +30,6 @@ import (
 type config struct {
 	listenAddress        string
 	databasePath         string
-	agentToken           string
 	githubToken          string
 	githubAppID          int64
 	githubClientID       string
@@ -40,9 +39,7 @@ type config struct {
 	githubAppSlug        string
 	baseURL              string
 	initialOwnerGitHubID int64
-	disableLegacyTokens  bool
 	bodyLimit            int64
-	apps                 []appConfig
 	reportEnabled        bool
 	reportEmailFrom      string
 	reportEmailTo        string
@@ -56,12 +53,6 @@ type config struct {
 	ntfyTopic            string
 	ntfyToken            string
 	webhookEncryptionKey string
-}
-
-type appConfig struct {
-	name  string
-	token string
-	repo  string
 }
 
 func main() {
@@ -107,24 +98,16 @@ func run(logger *slog.Logger) error {
 	}
 
 	ctx := context.Background()
-	// Upsert legacy apps before owner resolution so AssignLegacyProjects
-	// attaches freshly configured APP_* rows to the owner instead of
-	// leaving them at owner 0 where per-owner cleanup could not reach them.
-	for _, app := range conf.apps {
-		if err := store.UpsertApp(ctx, app.name, app.token, app.repo); err != nil {
-			return err
-		}
-		logger.Info("configured app", "app", app.name, "repo", app.repo)
-	}
 	legacyOwnerID, err := resolveLegacyOwner(ctx, store, conf.initialOwnerGitHubID, conf.ntfyEnabled)
 	if err != nil {
 		return err
 	}
 	store.ConfigureUnlimitedProjects(legacyOwnerID)
-	if conf.disableLegacyTokens {
-		if err := store.ClearAllLegacyTokens(ctx); err != nil {
-			return err
-		}
+	// Legacy static credentials are retired: AGENT_TOKEN and APP_*_TOKEN are
+	// no longer read, so no startup path can restore them. Clear any hashes
+	// left by pre-shutdown databases; modern project tokens are untouched.
+	if err := store.ClearAllLegacyTokens(ctx); err != nil {
+		return err
 	}
 
 	location, err := time.LoadLocation(conf.reportTimezone)
@@ -275,15 +258,9 @@ func run(logger *slog.Logger) error {
 		logger.Info("report delivery enabled", "timezone", conf.reportTimezone, "send_at", fmt.Sprintf("%02d:%02d", conf.reportSendHour, conf.reportSendMinute))
 	}
 
-	// With retirement enabled the legacy static agent token is never passed
-	// to the server, so agent routes accept only DB-backed agent keys.
-	agentToken := conf.agentToken
-	if conf.disableLegacyTokens {
-		agentToken = ""
-	}
+	// Agent routes accept only DB-backed agent and account keys; the legacy
+	// static agent token is retired and never configured.
 	server := httpserver.NewWithConfig(store, logger, conf.bodyLimit, httpserver.Config{
-		LegacyAgentToken:     agentToken,
-		LegacyOwnerID:        legacyOwnerID,
 		InitialOwnerGitHubID: conf.initialOwnerGitHubID,
 		BaseURL:              conf.baseURL,
 		GitHubAppSlug:        conf.githubAppSlug,
@@ -303,7 +280,6 @@ func loadConfig() (config, error) {
 	conf := config{
 		listenAddress:        envOr("LISTEN_ADDRESS", ":8080"),
 		databasePath:         envOr("DATABASE_PATH", "./data/raises.db"),
-		agentToken:           os.Getenv("AGENT_TOKEN"),
 		githubToken:          os.Getenv("GITHUB_TOKEN"),
 		bodyLimit:            1 << 20,
 		githubClientID:       strings.TrimSpace(os.Getenv("GITHUB_APP_CLIENT_ID")),
@@ -356,29 +332,14 @@ func loadConfig() (config, error) {
 	if conf.ntfyEnabled && conf.initialOwnerGitHubID == 0 {
 		return config{}, fmt.Errorf("NTFY_ENABLED requires a positive INITIAL_OWNER_GITHUB_ID for an existing signed-in owner")
 	}
-	conf.disableLegacyTokens = os.Getenv("DISABLE_LEGACY_TOKENS") == "1"
+	// AGENT_TOKEN, APP_*_TOKEN and DISABLE_LEGACY_TOKENS are retired and
+	// ignored: static legacy credentials are always rejected.
 	if conf.reportEnabled || conf.alertsEnabled {
 		if conf.reportEmailFrom == "" || conf.reportEmailTo == "" || conf.awsRegion == "" {
 			return config{}, fmt.Errorf("REPORT_ENABLED or OPERATIONAL_ALERTS_ENABLED requires REPORT_EMAIL_FROM, REPORT_EMAIL_TO, and AWS_REGION")
 		}
 	}
 
-	for _, env := range os.Environ() {
-		key, value, ok := strings.Cut(env, "=")
-		if !ok || !strings.HasPrefix(key, "APP_") || !strings.HasSuffix(key, "_TOKEN") {
-			continue
-		}
-		name := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(key, "APP_"), "_TOKEN"))
-		if name == "" || value == "" {
-			continue
-		}
-		repoKey := "APP_" + strings.ToUpper(name) + "_REPO"
-		conf.apps = append(conf.apps, appConfig{
-			name:  name,
-			token: value,
-			repo:  os.Getenv(repoKey),
-		})
-	}
 	return conf, nil
 }
 

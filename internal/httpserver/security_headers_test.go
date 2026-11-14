@@ -11,7 +11,7 @@ import (
 // headers and a CSP that allowlists exactly the third parties the console
 // uses (Google Fonts everywhere, Tag Manager on the public homepage).
 func TestSecurityHeadersOnPublicAndAPIResponses(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	for _, path := range []string{"/", "/healthz", "/readyz", "/v1/errors"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -44,7 +44,7 @@ func TestSecurityHeadersOnPublicAndAPIResponses(t *testing.T) {
 // The headers must survive redirects too (e.g. /settings when logged out),
 // otherwise the policy has gaps on exactly the authenticated pages.
 func TestSecurityHeadersOnRedirect(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

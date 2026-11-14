@@ -42,7 +42,8 @@ env:
     BASE_URL: <%= ENV.fetch("KAMAL_BASE_URL").inspect %>
     GITHUB_APP_SLUG: <%= ENV.fetch("GITHUB_APP_SLUG", "raises").inspect %>
     INITIAL_OWNER_GITHUB_ID: <%= ENV.fetch("INITIAL_OWNER_GITHUB_ID", "0").inspect %>
-    DISABLE_LEGACY_TOKENS: <%= ENV.fetch("DISABLE_LEGACY_TOKENS", "0").inspect %>
+    # Legacy static credentials (AGENT_TOKEN, APP_*_TOKEN) are retired in the
+    # binary and always rejected; no flag configures them.
     REPORT_ENABLED: <%= ENV.fetch("REPORT_ENABLED", "0").inspect %>
     REPORT_EMAIL_FROM: <%= ENV.fetch("REPORT_EMAIL_FROM", "").inspect %>
     REPORT_EMAIL_TO: <%= ENV.fetch("REPORT_EMAIL_TO", "").inspect %>

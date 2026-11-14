@@ -50,14 +50,14 @@ func TestPanicRecoveryReportsAndReturns500(t *testing.T) {
 }
 
 func TestCreateAndFetchError(t *testing.T) {
-	handler := testHandler(t)
+	handler, agentToken, ingestToken := testHandler(t)
 	body := `{
 		"env":"production",
 		"revision":"abc",
 		"error":{"class":"NoMethodError","message":"boom","backtrace":["app/models/user.rb:9:in call"]}
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/notices", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer app-token")
+	req.Header.Set("Authorization", "Bearer "+ingestToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -65,7 +65,7 @@ func TestCreateAndFetchError(t *testing.T) {
 	}
 
 	list := httptest.NewRequest(http.MethodGet, "/v1/errors?app=widget&unacked=1", nil)
-	list.Header.Set("Authorization", "Bearer agent-token")
+	list.Header.Set("Authorization", "Bearer "+agentToken)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, list)
 	if listRec.Code != http.StatusOK {
@@ -77,7 +77,7 @@ func TestCreateAndFetchError(t *testing.T) {
 	}
 
 	ack := httptest.NewRequest(http.MethodPost, "/v1/errors/1/ack", nil)
-	ack.Header.Set("Authorization", "Bearer agent-token")
+	ack.Header.Set("Authorization", "Bearer "+agentToken)
 	ackRec := httptest.NewRecorder()
 	handler.ServeHTTP(ackRec, ack)
 	if ackRec.Code != http.StatusOK {
@@ -86,14 +86,14 @@ func TestCreateAndFetchError(t *testing.T) {
 }
 
 func TestSuppressAndUnsuppressErrorAPI(t *testing.T) {
-	handler := testHandler(t)
+	handler, agentToken, ingestToken := testHandler(t)
 	body := `{
 		"env":"production",
 		"revision":"abc",
 		"error":{"class":"RuntimeError","message":"boom","backtrace":["app/models/user.rb:9:in call"]}
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/notices", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer app-token")
+	req.Header.Set("Authorization", "Bearer "+ingestToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -101,7 +101,7 @@ func TestSuppressAndUnsuppressErrorAPI(t *testing.T) {
 	}
 
 	suppress := httptest.NewRequest(http.MethodPost, "/v1/errors/1/suppress", nil)
-	suppress.Header.Set("Authorization", "Bearer agent-token")
+	suppress.Header.Set("Authorization", "Bearer "+agentToken)
 	suppressRec := httptest.NewRecorder()
 	handler.ServeHTTP(suppressRec, suppress)
 	if suppressRec.Code != http.StatusOK {
@@ -113,7 +113,7 @@ func TestSuppressAndUnsuppressErrorAPI(t *testing.T) {
 	}
 
 	unsuppress := httptest.NewRequest(http.MethodPost, "/v1/errors/1/unsuppress", nil)
-	unsuppress.Header.Set("Authorization", "Bearer agent-token")
+	unsuppress.Header.Set("Authorization", "Bearer "+agentToken)
 	unsuppressRec := httptest.NewRecorder()
 	handler.ServeHTTP(unsuppressRec, unsuppress)
 	if unsuppressRec.Code != http.StatusOK {
@@ -126,7 +126,7 @@ func TestSuppressAndUnsuppressErrorAPI(t *testing.T) {
 }
 
 func TestHomepage(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -154,7 +154,7 @@ func TestHomepage(t *testing.T) {
 }
 
 func TestAgentDocumentation(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 
 	for _, test := range []struct {
 		path string
@@ -178,7 +178,7 @@ func TestAgentDocumentation(t *testing.T) {
 }
 
 func TestRejectsBadAgentToken(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/errors", nil)
 	req.Header.Set("Authorization", "Bearer nope")
 	rec := httptest.NewRecorder()
@@ -827,21 +827,38 @@ func TestSettingsShowsDeadDeliveryAndOwnerCanRetry(t *testing.T) {
 	}
 }
 
-func testHandler(t *testing.T) http.Handler {
+func testHandler(t *testing.T) (http.Handler, string, string) {
 	t.Helper()
+	ctx := context.Background()
 	store, err := inbox.Open(filepath.Join(t.TempDir(), "raises.db"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.UpsertApp(context.Background(), "widget", "app-token", "example/widget"); err != nil {
+	// Static legacy credentials are retired, so the fixture wires a
+	// DB-backed project with an ingestion token and an agent key.
+	owner, err := store.UpsertGitHubUser(ctx, 7, "owner", "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return New(store, "agent-token", slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20).Handler()
+	project, err := store.CreateProject(ctx, owner.ID, "Widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingestToken, _, err := store.CreateProjectToken(ctx, owner.ID, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentToken, _, err := store.CreateAgentKey(ctx, owner.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithConfig(store, slog.New(slog.NewTextHandler(io.Discard, nil)), 1<<20, Config{}).Handler()
+	return handler, agentToken, ingestToken
 }
 
 func TestPublicDiscovery(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	for _, path := range []string{"/", "/robots.txt", "/sitemap.xml"} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -892,7 +909,7 @@ func TestPublicDiscovery(t *testing.T) {
 }
 
 func TestHomepageMarkdownNegotiation(t *testing.T) {
-	handler := testHandler(t)
+	handler, _, _ := testHandler(t)
 	for _, test := range []struct {
 		accept   string
 		markdown bool

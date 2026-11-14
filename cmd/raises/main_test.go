@@ -53,23 +53,14 @@ func TestLoadConfigRejectsEnabledReportingWithoutRequiredValues(t *testing.T) {
 	}
 }
 
-func TestLoadConfigParsesLegacyTokenRetirement(t *testing.T) {
+func TestLoadConfigIgnoresRetiredLegacyCredentialEnv(t *testing.T) {
 	setGenericConfigEnv(t)
+	t.Setenv("AGENT_TOKEN", "legacy-agent-token")
+	t.Setenv("APP_WIDGET_TOKEN", "legacy-app-token")
+	t.Setenv("APP_WIDGET_REPO", "example/widget")
 	t.Setenv("DISABLE_LEGACY_TOKENS", "1")
-	conf, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !conf.disableLegacyTokens {
-		t.Fatal("DISABLE_LEGACY_TOKENS=1 must retire legacy tokens")
-	}
-	t.Setenv("DISABLE_LEGACY_TOKENS", "yes")
-	conf, err = loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if conf.disableLegacyTokens {
-		t.Fatal("only the exact value 1 retires legacy tokens")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("retired legacy credential env must be ignored, got error: %v", err)
 	}
 }
 
