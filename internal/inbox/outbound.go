@@ -81,7 +81,7 @@ func (s *Store) enqueueOutboundEventTx(ctx context.Context, tx *sql.Tx, sourceKe
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if s.operatorNtfyEnabled && ownerID == s.operatorNtfyOwnerID && (eventType == "notice.created" || eventType == "error.created" || eventType == "error.regressed") {
+	if s.operatorNtfyEnabled && ownerID == s.operatorNtfyOwnerID && ((eventType == "notice.created" && s.noticePushed(payload)) || eventType == "error.created" || eventType == "error.regressed") {
 		next := now
 		if delayNtfy {
 			next = now.Add(5 * time.Second)

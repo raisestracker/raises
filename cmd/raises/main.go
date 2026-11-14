@@ -228,6 +228,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		store.ConfigureOperatorNtfy(legacyOwnerID, true)
+		store.SetOperatorNtfyMinNoticeLevel(os.Getenv("NTFY_MIN_NOTICE_LEVEL"))
 		logger.Info("ntfy notifications enabled", "owner_user_id", legacyOwnerID)
 	}
 	outboundSender := &outbound.Sender{Webhooks: outbound.New(), Ntfy: notifier}

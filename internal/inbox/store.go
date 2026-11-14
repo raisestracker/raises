@@ -117,6 +117,7 @@ type Store struct {
 	secretCipher             SecretCipher
 	operatorNtfyOwnerID      int64
 	operatorNtfyEnabled      bool
+	operatorNtfyMinNotice    string // lowest notice level pushed to the operator's ntfy; default warning
 	unlimitedProjectsOwnerID int64
 }
 

@@ -82,7 +82,7 @@ func TestEventEnqueuesWebhookAndOperatorNtfy(t *testing.T) {
 		t.Fatalf("endpoint=%#v secret=%q err=%v", endpoint, secret, err)
 	}
 	store.ConfigureOperatorNtfy(user.ID, true)
-	if _, err := store.CreateEvent(ctx, token, EventInput{Message: "Deploy finished"}); err != nil {
+	if _, err := store.CreateEvent(ctx, token, EventInput{Message: "Deploy finished", Level: "warning"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,5 +263,46 @@ func TestCreateEventPrunesExpiredEvents(t *testing.T) {
 	var count int
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE id='old'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("count=%d err=%v", count, err)
+	}
+}
+
+func TestInfoNoticesStayOffTheOperatorsPhone(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := context.Background()
+	user, _ := store.UpsertGitHubUser(ctx, 12, "owner", "", "")
+	project, _ := store.CreateProject(ctx, user.ID, "Widget", "widget")
+	token, _, _ := store.CreateProjectToken(ctx, user.ID, project.ID)
+	store.ConfigureOperatorNtfy(user.ID, true)
+	count := func() int {
+		var n int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_deliveries WHERE destination_kind='ntfy'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, level := range []string{"", "info"} { // the default level is info
+		if _, err := store.CreateEvent(ctx, token, EventInput{Message: "routine " + level, Level: level}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("info notices pushed to ntfy: %d", n)
+	}
+	if _, err := store.CreateEvent(ctx, token, EventInput{Message: "disk 95%", Level: "warning"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("warning not pushed: %d", n)
+	}
+	var events int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&events); err != nil || events != 3 {
+		t.Fatalf("all three notices must still be stored: %d %v", events, err)
+	}
+	store.SetOperatorNtfyMinNoticeLevel("info")
+	if _, err := store.CreateEvent(ctx, token, EventInput{Message: "verbose", Level: "info"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("NTFY_MIN_NOTICE_LEVEL=info should push info again: %d", n)
 	}
 }
