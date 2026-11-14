@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -326,7 +327,7 @@ func testPreFixDB(t *testing.T, apps []preFixApp, groups []preFixGroup, now time
 	for _, statement := range []string{
 		`CREATE TABLE apps (name TEXT PRIMARY KEY, slug TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL, github_repo TEXT NOT NULL DEFAULT '', project_id TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '', owner_user_id INTEGER NOT NULL DEFAULT 0, github_installation_id INTEGER NOT NULL DEFAULT 0, github_repository_id INTEGER NOT NULL DEFAULT 0, archived_at_unix INTEGER, created_at_unix INTEGER NOT NULL DEFAULT 0, updated_at_unix INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE error_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL DEFAULT '', app_name TEXT NOT NULL, env TEXT NOT NULL, fingerprint TEXT NOT NULL, class TEXT NOT NULL, location TEXT NOT NULL, message TEXT NOT NULL, count INTEGER NOT NULL, first_seen_unix INTEGER NOT NULL, last_seen_unix INTEGER NOT NULL, last_revision TEXT NOT NULL DEFAULT '', github_issue_number INTEGER NOT NULL DEFAULT 0, github_issue_url TEXT NOT NULL DEFAULT '', acked_at_unix INTEGER, suppressed_at_unix INTEGER, resolved_at_unix INTEGER, sample_json TEXT NOT NULL, UNIQUE(app_name, env, fingerprint))`,
-		`CREATE TABLE notices (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, received_at_unix INTEGER NOT NULL, revision TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL)`,
+		`CREATE TABLE notices (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, received_at_unix INTEGER NOT NULL, revision TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL, FOREIGN KEY(group_id) REFERENCES error_groups(id))`,
 		`CREATE TABLE issue_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, action TEXT NOT NULL, delivery_key TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at_unix INTEGER NOT NULL, lease_expires_at_unix INTEGER, last_error TEXT NOT NULL DEFAULT '', created_at_unix INTEGER NOT NULL, completed_at_unix INTEGER, failed_at_unix INTEGER)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -378,5 +379,81 @@ func assertTenantUniqueKey(t *testing.T, store *Store, ctx context.Context) {
 	}
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM error_groups WHERE fingerprint = 'probe-fp'`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The realistic pre-fix production shape: the colliding row already carries
+// the first ingester's project_id and may hold the other tenant's notices.
+// The data cannot tell those notices apart (same slug in every payload), so
+// the migration must keep the row and its notices exactly where they are,
+// survive repeated boots, keep notices' foreign key intact, and start the
+// other tenant on its own group. Separating such history needs an
+// owner-authorized recovery decision, not a migration guess.
+func TestLegacyAttributedCollisionSurvivesRepeatedMigration(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	fp, location := Fingerprint("RuntimeError", []string{"app/jobs/work_job.rb:4:in `perform`"}, nil)
+	path := testPreFixDB(t, []preFixApp{
+		{name: "151:web", slug: "web", projectID: "prj_web_151", ownerID: 151, tokenHash: HashToken("token-a")},
+		{name: "152:web", slug: "web", projectID: "prj_web_152", ownerID: 152, tokenHash: HashToken("token-b")},
+	}, []preFixGroup{
+		{appName: "web", projectID: "prj_web_151", env: "production", fingerprint: fp, location: location},
+	}, now)
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO notices(group_id,received_at_unix,payload_json) VALUES(1,?,'{"app":"web"}'),(1,?,'{"app":"web"}')`, now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+
+	for boot := 0; boot < 2; boot++ {
+		store, err := Open(path, func() time.Time { return now }, &fakeFiler{})
+		if err != nil {
+			t.Fatalf("boot %d: %v", boot, err)
+		}
+		assertTenantUniqueKey(t, store, ctx)
+		var projectID string
+		var notices int
+		if err := store.db.QueryRowContext(ctx, `SELECT project_id, (SELECT COUNT(*) FROM notices WHERE group_id = 1) FROM error_groups WHERE id = 1`).Scan(&projectID, &notices); err != nil {
+			t.Fatalf("boot %d: %v", boot, err)
+		}
+		if projectID != "prj_web_151" || notices != 2 {
+			t.Fatalf("boot %d: attributed history moved: project=%q notices=%d", boot, projectID, notices)
+		}
+		var noticesSQL string
+		if err := store.db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='notices'`).Scan(&noticesSQL); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(noticesSQL, "REFERENCES error_groups(id)") {
+			t.Fatalf("boot %d: notices lost its error_groups reference: %s", boot, noticesSQL)
+		}
+		rows, err := store.db.QueryContext(ctx, `PRAGMA foreign_key_check(notices)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		violation := rows.Next()
+		_ = rows.Close()
+		if violation {
+			t.Fatalf("boot %d: notices foreign key broken after rebuild", boot)
+		}
+		_ = store.Close()
+	}
+
+	store, err := Open(path, func() time.Time { return now }, &fakeFiler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ownerB, _ := store.UpsertGitHubUser(ctx, 152, "owner-b", "", "")
+	adoptLegacyApp(t, store, ctx, ownerB, "prj_web_152")
+	tokenB := issueTokenForProject(t, store, ctx, ownerB, "prj_web_152")
+	bRes, err := store.Ingest(ctx, tokenB, sameNotice("DUMMY-B-VALUE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bRes.Created || bRes.Group.ID == 1 || bRes.Group.ProjectID != "prj_web_152" {
+		t.Fatalf("tenant B joined A's legacy group: %#v", bRes.Group)
 	}
 }
