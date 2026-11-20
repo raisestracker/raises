@@ -17,7 +17,7 @@ func TestLoadConfigUsesGenericDisabledDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conf.githubAppID != 0 || conf.initialOwnerGitHubID != 0 || conf.reportEnabled || conf.alertsEnabled {
+	if conf.githubAppID != 0 || conf.initialOwnerGitHubID != 0 || conf.reportEnabled || conf.alertsEnabled || conf.indexNowEnabled {
 		t.Fatalf("unexpected enabled defaults: %#v", conf)
 	}
 	if conf.reportEmailFrom != "" || conf.reportEmailTo != "" || conf.awsRegion != "" || conf.reportTimezone != "UTC" || conf.reportSendHour != 7 || conf.reportSendMinute != 0 {
@@ -130,7 +130,21 @@ func setGenericConfigEnv(t *testing.T) {
 		"NTFY_ENABLED":               "0",
 		"NTFY_TOPIC":                 "",
 		"NTFY_TOKEN":                 "",
+		"BASE_URL":                   "",
+		"INDEXNOW_ENABLED":           "",
 	} {
 		t.Setenv(key, value)
+	}
+}
+
+func TestLoadConfigEnablesIndexNowOnProductionHost(t *testing.T) {
+	setGenericConfigEnv(t)
+	t.Setenv("BASE_URL", "https://raises.dev")
+	conf, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conf.indexNowEnabled {
+		t.Fatal("expected indexNowEnabled=true for https://raises.dev")
 	}
 }

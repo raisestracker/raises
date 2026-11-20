@@ -223,7 +223,10 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.initializeEvents(ctx); err != nil {
 		return err
 	}
-	return s.initializeReporting(ctx)
+	if err := s.initializeReporting(ctx); err != nil {
+		return err
+	}
+	return s.initializeIndexNow(ctx)
 }
 
 func (s *Store) UpsertApp(ctx context.Context, name, token, repo string) error {

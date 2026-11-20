@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/raisestracker/raises/internal/inbox"
+	"github.com/raisestracker/raises/internal/indexnow"
 	"github.com/raisestracker/raises/internal/secretbox"
 )
 
@@ -859,13 +860,20 @@ func testHandler(t *testing.T) (http.Handler, string, string) {
 
 func TestPublicDiscovery(t *testing.T) {
 	handler, _, _ := testHandler(t)
-	for _, path := range []string{"/", "/robots.txt", "/sitemap.xml"} {
+	for _, path := range []string{"/", "/robots.txt", "/sitemap.xml", indexnow.KeyPath} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: %d", path, rec.Code)
 		}
 		switch path {
+		case indexnow.KeyPath:
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+				t.Errorf("indexnow key content-type = %q", ct)
+			}
+			if rec.Body.String() != indexnow.Key {
+				t.Errorf("indexnow key body = %q, want %q", rec.Body.String(), indexnow.Key)
+			}
 		case "/":
 			for _, link := range []string{`</sitemap.xml>; rel="sitemap"`, `</llms.txt>; rel="describedby"`} {
 				if !strings.Contains(rec.Header().Get("Link"), link) {
