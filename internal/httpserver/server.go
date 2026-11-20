@@ -21,6 +21,7 @@ import (
 
 	gh "github.com/raisestracker/raises/internal/github"
 	"github.com/raisestracker/raises/internal/inbox"
+	"github.com/raisestracker/raises/internal/indexnow"
 	"github.com/raisestracker/raises/web"
 )
 
@@ -176,6 +177,9 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	})
 	mux.HandleFunc("GET /sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.serveTextAsset(w, "sitemap.xml", "application/xml; charset=utf-8")
+	})
+	mux.HandleFunc("GET "+indexnow.KeyPath, func(w http.ResponseWriter, r *http.Request) {
+		s.serveTextAsset(w, indexnow.Key+".txt", "text/plain; charset=utf-8")
 	})
 	mux.HandleFunc("GET /llms.txt", s.llmsText)
 	mux.HandleFunc("GET /skill.md", s.skillText)
