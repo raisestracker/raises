@@ -20,6 +20,9 @@ func (s *Store) initializeIndexNow(ctx context.Context) error {
 }
 
 func (s *Store) IndexNowSubmitted(ctx context.Context) (map[string]string, error) {
+	if err := s.initializeIndexNow(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT url, fingerprint FROM indexnow_submissions`)
 	if err != nil {
 		return nil, fmt.Errorf("query indexnow submissions: %w", err)
@@ -41,6 +44,9 @@ func (s *Store) IndexNowSubmitted(ctx context.Context) (map[string]string, error
 }
 
 func (s *Store) RecordIndexNowSubmitted(ctx context.Context, entries map[string]string) error {
+	if err := s.initializeIndexNow(ctx); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin indexnow transaction: %w", err)
