@@ -55,6 +55,11 @@ type config struct {
 	webhookEncryptionKey string
 }
 
+// revision is the deployed commit SHA served at GET /version. It is set at
+// build time with -ldflags "-X main.revision=<sha>" (see Dockerfile); the
+// "unknown" fallback only appears in builds that skipped the injection.
+var revision = "unknown"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(logger); err != nil {
@@ -262,6 +267,7 @@ func run(logger *slog.Logger) error {
 	// Agent routes accept only DB-backed agent and account keys; the legacy
 	// static agent token is retired and never configured.
 	server := httpserver.NewWithConfig(store, logger, conf.bodyLimit, httpserver.Config{
+		Revision:             revision,
 		InitialOwnerGitHubID: conf.initialOwnerGitHubID,
 		BaseURL:              conf.baseURL,
 		GitHubAppSlug:        conf.githubAppSlug,

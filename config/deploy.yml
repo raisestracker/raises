@@ -60,6 +60,11 @@ volumes:
 
 builder:
   arch: amd64
+  # Inject the deploying commit into the image so GET /version serves it for
+  # the fleet-deployer. Evaluated where kamal runs (CI checks out full
+  # history), never from git at runtime inside the container.
+  args:
+    REVISION: <%= `git rev-parse HEAD`.strip %>
 
 ssh:
   user: <%= ENV.fetch("KAMAL_SSH_USER") %>

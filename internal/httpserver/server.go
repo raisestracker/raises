@@ -105,6 +105,10 @@ type OperationalReporter interface {
 }
 
 type Config struct {
+	// Revision is the deployed commit SHA served verbatim at GET /version.
+	// It is injected at build time (ldflags -X main.revision), never read
+	// from git at runtime, so the fleet-deployer can attest the live build.
+	Revision             string
 	InitialOwnerGitHubID int64
 	BaseURL              string
 	GitHubAppSlug        string
@@ -151,6 +155,9 @@ const (
 )
 
 func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Config) *Server {
+	if config.Revision == "" {
+		config.Revision = "unknown"
+	}
 	s := &Server{
 		store:     store,
 		logger:    logger,
@@ -175,6 +182,7 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /migration.md", s.migrationText)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	mux.HandleFunc("GET /version", s.version)
 	mux.HandleFunc("POST /v1/notices", s.createNotice)
 	mux.HandleFunc("POST /v1/events", s.createEvent)
 	mux.HandleFunc("GET /v1/events", s.listEvents)
@@ -386,6 +394,22 @@ func (s *Server) serveTextAsset(w http.ResponseWriter, name, contentType string)
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// version serves the deployed commit SHA for the fleet-deployer, which
+// requires exactly {"revision":"<40-hex sha>"} with Content-Type
+// application/json, Cache-Control: no-store and no redirect. The body is
+// marshaled without a trailing newline so byte-exact probes match.
+func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
+	body, err := json.Marshal(map[string]string{"revision": s.config.Revision})
+	if err != nil {
+		http.Error(w, "could not render version", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
