@@ -21,6 +21,7 @@ import (
 	gh "github.com/raisestracker/raises/internal/github"
 	"github.com/raisestracker/raises/internal/httpserver"
 	"github.com/raisestracker/raises/internal/inbox"
+	"github.com/raisestracker/raises/internal/indexnow"
 	"github.com/raisestracker/raises/internal/ntfy"
 	"github.com/raisestracker/raises/internal/operational"
 	"github.com/raisestracker/raises/internal/outbound"
@@ -53,6 +54,7 @@ type config struct {
 	ntfyTopic            string
 	ntfyToken            string
 	webhookEncryptionKey string
+	indexNowEnabled      bool
 }
 
 // revision is the deployed commit SHA served at GET /version. It is set at
@@ -181,6 +183,25 @@ func run(logger *slog.Logger) error {
 		logger.Info("sent ntfy alert canary")
 		return nil
 	}
+	if command == "indexnow submit" {
+		entries, err := indexnow.SitemapEntries(nil)
+		if err != nil {
+			return err
+		}
+		urls := make([]string, 0, len(entries))
+		for u := range entries {
+			urls = append(urls, u)
+		}
+		sent, err := indexnow.NewClient().Submit(ctx, urls)
+		if err != nil {
+			return err
+		}
+		if err := store.RecordIndexNowSubmitted(ctx, entries); err != nil {
+			return err
+		}
+		logger.Info("submitted IndexNow sitemap", "count", len(sent), "urls", sent)
+		return nil
+	}
 	if command != "" {
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -263,6 +284,20 @@ func run(logger *slog.Logger) error {
 		})
 		logger.Info("report delivery enabled", "timezone", conf.reportTimezone, "send_at", fmt.Sprintf("%02d:%02d", conf.reportSendHour, conf.reportSendMinute))
 	}
+	if conf.indexNowEnabled {
+		indexNowWorker := &indexnow.Worker{
+			Client: indexnow.NewClient(),
+			Store:  store,
+			Logger: logger,
+		}
+		runProtected("indexnow-worker", "IndexNow worker panicked", func() {
+			indexNowWorker.Run(runCtx, func(err error) {
+				logger.Error("indexnow submission failed", "error", err)
+				reportOperational("indexnow-worker", "IndexNow submission failed", err.Error())
+			})
+		})
+		logger.Info("indexnow enabled", "host", indexnow.Host, "interval", indexnow.DefaultInterval.String())
+	}
 
 	// Agent routes accept only DB-backed agent and account keys; the legacy
 	// static agent token is retired and never configured.
@@ -307,6 +342,7 @@ func loadConfig() (config, error) {
 		ntfyToken:            os.Getenv("NTFY_TOKEN"),
 		webhookEncryptionKey: os.Getenv("WEBHOOK_ENCRYPTION_KEY"),
 	}
+	conf.indexNowEnabled = indexnow.Enabled(conf.baseURL, os.Getenv("INDEXNOW_ENABLED"))
 	parsedSendAt, err := time.Parse("15:04", envOr("REPORT_SEND_AT", "07:00"))
 	if err != nil {
 		return config{}, fmt.Errorf("REPORT_SEND_AT must use HH:MM: %w", err)
