@@ -274,7 +274,7 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Add("Vary", "Accept")
-	w.Header().Set("Link", `</sitemap.xml>; rel="sitemap", </llms.txt>; rel="describedby"; type="text/plain"`)
+	w.Header().Set("Link", `</sitemap.xml>; rel="sitemap", </llms.txt>; rel="describedby"; type="text/plain", <https://raises.dev/>; rel="canonical"`)
 	w.Header().Set("Cache-Control", "no-cache")
 	if prefersMarkdown(r.Header.Values("Accept")) {
 		s.serveTextAsset(w, "index.md", "text/markdown; charset=utf-8")
@@ -378,12 +378,15 @@ func (s *Server) appIcon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) llmsText(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Link", `<https://raises.dev/llms.txt>; rel="canonical"`)
 	s.serveTextAsset(w, "llms.txt", "text/plain; charset=utf-8")
 }
 func (s *Server) skillText(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Link", `<https://raises.dev/skill.md>; rel="canonical"`)
 	s.serveTextAsset(w, "skill.md", "text/markdown; charset=utf-8")
 }
 func (s *Server) migrationText(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Link", `<https://raises.dev/migration.md>; rel="canonical"`)
 	s.serveTextAsset(w, "migration.md", "text/markdown; charset=utf-8")
 }
 func (s *Server) serveTextAsset(w http.ResponseWriter, name, contentType string) {

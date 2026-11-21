@@ -875,13 +875,16 @@ func TestPublicDiscovery(t *testing.T) {
 				t.Errorf("indexnow key body = %q, want %q", rec.Body.String(), indexnow.Key)
 			}
 		case "/":
-			for _, link := range []string{`</sitemap.xml>; rel="sitemap"`, `</llms.txt>; rel="describedby"`} {
+			for _, link := range []string{`</sitemap.xml>; rel="sitemap"`, `</llms.txt>; rel="describedby"`, `<https://raises.dev/>; rel="canonical"`} {
 				if !strings.Contains(rec.Header().Get("Link"), link) {
 					t.Errorf("missing link %s", link)
 				}
 			}
 			if rec.Header().Get("Vary") != "Accept" {
 				t.Error("missing Vary: Accept")
+			}
+			if !strings.Contains(rec.Body.String(), `href="/skill.md"`) {
+				t.Error("homepage does not link to /skill.md")
 			}
 		case "/robots.txt":
 			for _, want := range []string{"User-agent: *\nAllow: /", "Content-Signal: search=yes, ai-input=yes, ai-train=no", "Sitemap: https://raises.dev/sitemap.xml"} {
@@ -894,6 +897,7 @@ func TestPublicDiscovery(t *testing.T) {
 				XMLName xml.Name
 				URLs    []struct {
 					Location string `xml:"loc"`
+					LastMod  string `xml:"lastmod"`
 				} `xml:"url"`
 			}
 			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
@@ -906,12 +910,38 @@ func TestPublicDiscovery(t *testing.T) {
 				if !strings.HasPrefix(entry.Location, "https://raises.dev/") {
 					t.Fatalf("unexpected URL %s", entry.Location)
 				}
+				if entry.LastMod == "" {
+					t.Errorf("sitemap URL %s has no lastmod", entry.Location)
+				} else if _, err := time.Parse("2006-01-02", entry.LastMod); err != nil {
+					t.Errorf("sitemap URL %s has invalid lastmod %q", entry.Location, entry.LastMod)
+				}
 				page := httptest.NewRecorder()
 				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, entry.Location, nil))
 				if page.Code != http.StatusOK {
 					t.Errorf("sitemap URL %s: %d", entry.Location, page.Code)
 				}
 			}
+		}
+	}
+}
+
+func TestIndexablePagesCanonical(t *testing.T) {
+	handler, _, _ := testHandler(t)
+	for path, canonical := range map[string]string{
+		"/skill.md":     `<https://raises.dev/skill.md>; rel="canonical"`,
+		"/llms.txt":     `<https://raises.dev/llms.txt>; rel="canonical"`,
+		"/migration.md": `<https://raises.dev/migration.md>; rel="canonical"`,
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", path, rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Link"), canonical) {
+			t.Errorf("%s: missing canonical link %s", path, canonical)
+		}
+		if strings.Contains(strings.ToLower(rec.Header().Get("X-Robots-Tag")), "noindex") {
+			t.Errorf("%s: must stay indexable", path)
 		}
 	}
 }

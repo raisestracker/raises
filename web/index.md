@@ -4,7 +4,7 @@
 
 An application exception becomes structured evidence your coding agent can investigate, fix, and acknowledge. Official clients support Rails and Go. Connect GitHub when you want automatic issues.
 
-[Sign in with GitHub](https://raises.dev/auth/github) · [Read llms.txt](https://raises.dev/llms.txt)
+[Sign in with GitHub](https://raises.dev/auth/github) · [Read llms.txt](https://raises.dev/llms.txt) · [Agent skill](https://raises.dev/skill.md)
 
 ## Point your agent here
 
