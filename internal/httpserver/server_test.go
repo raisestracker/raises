@@ -894,6 +894,7 @@ func TestPublicDiscovery(t *testing.T) {
 				XMLName xml.Name
 				URLs    []struct {
 					Location string `xml:"loc"`
+					Lastmod  string `xml:"lastmod"`
 				} `xml:"url"`
 			}
 			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
@@ -905,6 +906,12 @@ func TestPublicDiscovery(t *testing.T) {
 			for _, entry := range sitemap.URLs {
 				if !strings.HasPrefix(entry.Location, "https://raises.dev/") {
 					t.Fatalf("unexpected URL %s", entry.Location)
+				}
+				lastmod, err := time.Parse("2006-01-02", entry.Lastmod)
+				if err != nil {
+					t.Errorf("sitemap URL %s has invalid lastmod %q: content-based lastmod is required", entry.Location, entry.Lastmod)
+				} else if lastmod.After(time.Now()) {
+					t.Errorf("sitemap URL %s has future lastmod %q", entry.Location, entry.Lastmod)
 				}
 				page := httptest.NewRecorder()
 				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, entry.Location, nil))
