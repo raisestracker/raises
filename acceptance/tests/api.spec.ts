@@ -192,3 +192,16 @@ test("webhook endpoints receive test, error and notice events", async ({ request
   const after = await (await request.get("/v1/webhook-endpoints", bearer(token))).json();
   expect(after.map((e: any) => e.id)).not.toContain(endpoint.id);
 });
+
+test("version reports the deployed revision as JSON without caching", async ({ request }) => {
+  // The fleet-deployer requires exactly {"revision":"<sha>"} as
+  // application/json with Cache-Control: no-store and no redirect. The
+  // acceptance binary is built without the injected SHA, so assert the
+  // shape here; the exact deployed SHA is pinned by the Go unit test and
+  // the deploy smoke check in bin/release.
+  const response = await request.get("/version");
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toBe("application/json");
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(await response.text()).toMatch(/^\{"revision":"[^"]+"\}$/);
+});

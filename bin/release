@@ -23,4 +23,30 @@ printf '\n'
 curl --fail --silent --show-error --retry 5 --retry-delay 3 "${KAMAL_BASE_URL%/}/readyz"
 printf '\n'
 
+section "Production version check (fleet-deployer)"
+# GET /version must serve exactly {"revision":"<deployed sha>"} as
+# application/json with Cache-Control: no-store and no redirect.
+headers_file="$(mktemp)"
+body_file="$(mktemp)"
+curl --fail --silent --show-error --retry 5 --retry-delay 3 -D "$headers_file" -o "$body_file" "${KAMAL_BASE_URL%/}/version"
+cat "$body_file"
+printf '\n'
+# Byte-exact comparison (cmp, not command substitution, so a trailing
+# newline the deployer would reject is caught here too).
+expected_version="{\"revision\":\"$(git rev-parse HEAD)\"}"
+if ! printf '%s' "$expected_version" | cmp -s - "$body_file"; then
+  printf 'GET /version body does not match %q\n' "$expected_version" >&2
+  rm -f "$headers_file" "$body_file"
+  exit 1
+fi
+rm -f "$body_file"
+for header in '^content-type: application/json' '^cache-control: no-store'; do
+  if ! grep -qi "$header" "$headers_file"; then
+    printf 'GET /version is missing header matching %s\n' "$header" >&2
+    rm -f "$headers_file"
+    exit 1
+  fi
+done
+rm -f "$headers_file"
+
 section "Release complete"

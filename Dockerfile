@@ -9,12 +9,16 @@ RUN npm run build:css
 FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine AS build
 
 ARG TARGETARCH=amd64
+# Deployed commit SHA served at GET /version (fleet-deployer attestation).
+# Kamal passes the deploying commit via builder args; local and CI compose
+# builds keep the "unknown" fallback.
+ARG REVISION=unknown
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=assets /src/web/style.css ./web/style.css
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/raises ./cmd/raises
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.revision=${REVISION}" -o /out/raises ./cmd/raises
 # Pre-create the SQLite data directory owned by the runtime uid, so a fresh
 # named volume mounted at /data inherits writable ownership on first use.
 RUN mkdir -p /out/data && chown 65532:65532 /out/data

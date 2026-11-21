@@ -12,7 +12,7 @@ import (
 // uses (Google Fonts everywhere, Tag Manager on the public homepage).
 func TestSecurityHeadersOnPublicAndAPIResponses(t *testing.T) {
 	handler, _, _ := testHandler(t)
-	for _, path := range []string{"/", "/healthz", "/readyz", "/v1/errors"} {
+	for _, path := range []string{"/", "/healthz", "/readyz", "/version", "/v1/errors"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
