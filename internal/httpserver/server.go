@@ -138,8 +138,10 @@ type requestWindow struct {
 // Pre-auth rate limiting never charges a request before authentication
 // succeeds: distinct invalid tokens must not mint fresh windows or unbounded
 // map entries, and valid credentials sharing one egress IP must not consume
-// each other's budget. Before auth the server only reads the failure budgets
-// (a pure lookup that mints no state); per-token windows apply only after
+// each other's budget. Before auth the server only reads the per-IP failure
+// budget (a pure lookup that mints no state); the global failure budget is
+// charged on the failure path only, after the credential lookup fails, and
+// per-token windows apply only after
 // authentication succeeds. Failures counted by failedAuthLimited turn
 // sustained guessing into 429s while valid credentials keep working.
 const (
@@ -615,7 +617,9 @@ func (s *Server) evictRateLimitEntryLocked(now time.Time) {
 // header is trusted only when the TCP peer is the proxy itself
 // (loopback/link-local/private, i.e. the host or container network);
 // otherwise the peer address is used, so a client reaching the app directly
-// cannot rotate the header to mint fresh buckets.
+// cannot rotate the header to mint fresh buckets. IPv6 clients are bucketed
+// by /64 (see bucketIP), so one subnet cannot mint a fresh budget per
+// address.
 func clientIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		if peer, err := netip.ParseAddr(host); err == nil {
@@ -624,15 +628,29 @@ func clientIP(r *http.Request) string {
 				if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 					parts := strings.Split(xff, ",")
 					if last, err := netip.ParseAddr(strings.TrimSpace(parts[len(parts)-1])); err == nil {
-						return last.Unmap().WithZone("").String()
+						return bucketIP(last)
 					}
 				}
 			}
-			return peer.String()
+			return bucketIP(peer)
 		}
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// bucketIP maps an address to its rate-limit bucket: IPv6 clients share one
+// bucket per /64 subnet, since a single host (privacy extensions) or a small
+// botnet slice can otherwise rotate addresses within one subnet freely.
+// IPv4 addresses are returned as-is.
+func bucketIP(ip netip.Addr) string {
+	ip = ip.Unmap().WithZone("")
+	if ip.Is6() {
+		if prefix, err := ip.Prefix(64); err == nil {
+			return prefix.Masked().Addr().String()
+		}
+	}
+	return ip.String()
 }
 
 // failedAuthLimited records an authentication failure against the per-IP and
@@ -645,17 +663,17 @@ func (s *Server) failedAuthLimited(r *http.Request) bool {
 }
 
 // preAuthLimited reports whether a not-yet-authenticated request must back
-// off, without charging it to any success-affecting bucket. It only reads the
-// failure budgets: sustained invalid-credential floods trip the per-IP or
-// global failure budget (counted by failedAuthLimited), while valid
+// off, without charging it to any success-affecting bucket. It only reads
+// the caller's per-IP failure budget (counted by failedAuthLimited): the
+// global failure budget applies on the failure path only, after the
+// credential lookup fails, so a distributed junk-token flood cannot 429 valid
 // credentials never consume pre-auth state, so apps sharing one egress IP
 // keep their full post-auth per-token windows.
 func (s *Server) preAuthLimited(r *http.Request) bool {
 	s.limitMu.Lock()
 	defer s.limitMu.Unlock()
 	now := time.Now()
-	return s.overBudgetLocked("authfail:ip:"+clientIP(r), failedAuthPerIPLimit, now) ||
-		s.overBudgetLocked("authfail:global", failedAuthGlobalLimit, now)
+	return s.overBudgetLocked("authfail:ip:"+clientIP(r), failedAuthPerIPLimit, now)
 }
 
 // overBudgetLocked reports whether key's window is currently exhausted,

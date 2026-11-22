@@ -69,24 +69,37 @@ func getErrors(s *Server, token, remoteAddr, forwardedFor string) int {
 	return rec.Code
 }
 
-// Distinct invalid tokens must neither bypass the limiter nor grow its state.
+// A distributed junk-token flood must neither bypass the limiter nor grow
+// its state, and must not lock out valid credentials: the global failure
+// budget applies on the failure path only, after the credential lookup
+// fails, so a fresh IP with a valid token still gets through.
 func TestDistinctInvalidTokensStayBounded(t *testing.T) {
-	s, _ := newRateLimitServer(t)
-	const total = 20000
+	s, agentToken := newRateLimitServer(t)
+	// Past the 2,000-strong global failure budget from 120 distinct IPs,
+	// each staying under its own per-IP budget so only the shared global
+	// budget trips.
+	const ips, perIP = 120, 20
 	seen429 := false
-	for i := 0; i < total; i++ {
+	sent := 0
+	for i := 0; i < ips; i++ {
 		// Distinct source IPs behind the trusted proxy: a distributed flood.
 		ip := fmt.Sprintf("203.0.%d.%d", (i>>8)&0xff, i&0xff)
-		code := postNotice(s, fmt.Sprintf("junk-%d", i), "127.0.0.1:1234", ip)
-		if code != http.StatusUnauthorized && code != http.StatusTooManyRequests {
-			t.Fatalf("request %d: status=%d", i, code)
-		}
-		if code == http.StatusTooManyRequests {
-			seen429 = true
+		for j := 0; j < perIP; j++ {
+			code := postNotice(s, fmt.Sprintf("junk-%d-%d", i, j), "127.0.0.1:1234", ip)
+			sent++
+			if code != http.StatusUnauthorized && code != http.StatusTooManyRequests {
+				t.Fatalf("flood request %d: status=%d", sent, code)
+			}
+			if code == http.StatusTooManyRequests {
+				seen429 = true
+			}
 		}
 	}
+	if sent <= failedAuthGlobalLimit {
+		t.Fatalf("flood sent %d failures, must exceed global budget %d", sent, failedAuthGlobalLimit)
+	}
 	if !seen429 {
-		t.Fatal("limiter never engaged during a 20k-token flood")
+		t.Fatal("global failure budget never engaged during a distributed flood")
 	}
 	s.limitMu.Lock()
 	size := len(s.limits)
@@ -113,8 +126,9 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 	}
 
 	// While the flood's minute-window is still active the global failure
-	// budget sheds all load, valid credentials included: the gate cannot
-	// tell valid from junk before the auth lookup.
+	// budget must shed only failing credentials: a valid ingestion
+	// token and a valid agent key from fresh IPs still get through, while
+	// an invalid token from a fresh IP gets 429 on the failure path.
 	req := httptest.NewRequest(http.MethodPost, "/v1/notices",
 		strings.NewReader(`{"error":{"class":"RuntimeError","message":"boom"}}`))
 	req.RemoteAddr = "127.0.0.1:1234"
@@ -122,8 +136,14 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer app-token")
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("valid ingest mid-flood: status=%d, want 429", rec.Code)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("valid ingest mid-flood: status=%d, want 201/200", rec.Code)
+	}
+	if code := getErrors(s, agentToken, "127.0.0.1:1234", "203.0.113.251"); code != http.StatusOK {
+		t.Fatalf("valid agent key mid-flood: status=%d, want 200", code)
+	}
+	if code := postNotice(s, "junk-fresh-ip", "127.0.0.1:1234", "203.0.113.252"); code != http.StatusTooManyRequests {
+		t.Fatalf("invalid token mid-flood: status=%d, want 429", code)
 	}
 
 	// Once the flood stops and its windows expire, a legitimate credential
@@ -141,7 +161,8 @@ func TestDistinctInvalidTokensStayBounded(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer app-token")
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
+	// 201 first seen, 200 once deduped into the mid-flood group above.
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 		t.Fatalf("valid ingest after flood: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -209,6 +230,26 @@ func TestClientIPTrustGate(t *testing.T) {
 	}
 	if !throttled {
 		t.Fatal("spoofed X-Forwarded-For entries evaded the shared client bucket")
+	}
+}
+
+// IPv6 clients share one rate-limit bucket per /64 subnet: rotating
+// addresses within a subnet does not mint fresh budgets, while a different
+// /64 gets its own.
+func TestClientIPv6BucketedBySlash64(t *testing.T) {
+	s, _ := newRateLimitServer(t)
+	for i := 0; i < failedAuthPerIPLimit; i++ {
+		if code := getErrors(s, "junk", "127.0.0.1:8080", "2001:db8::1"); code != http.StatusUnauthorized {
+			t.Fatalf("same-/64 request %d: status=%d, want 401", i, code)
+		}
+	}
+	// Same /64, different address: shares the exhausted per-IP budget.
+	if code := getErrors(s, "junk", "127.0.0.1:8080", "2001:db8::2"); code != http.StatusTooManyRequests {
+		t.Fatalf("same-/64 rotated address: status=%d, want 429", code)
+	}
+	// Different /64: fresh budget.
+	if code := getErrors(s, "junk", "127.0.0.1:8080", "2001:db8:0:1::1"); code != http.StatusUnauthorized {
+		t.Fatalf("other-/64 request: status=%d, want 401", code)
 	}
 }
 
