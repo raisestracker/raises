@@ -69,6 +69,7 @@ type Store interface {
 	SuppressForUser(context.Context, int64, int64) (inbox.Group, error)
 	UnsuppressForUser(context.Context, int64, int64) (inbox.Group, error)
 	UpsertInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
+	RefreshInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
 	ListInstallations(context.Context, int64) ([]inbox.GitHubInstallation, error)
 	InstallationUserID(context.Context, int64) (int64, error)
 	SetInstallationStatus(context.Context, int64, string) error
