@@ -889,6 +889,11 @@ func TestPublicDiscovery(t *testing.T) {
 					t.Errorf("missing robots directive %s", want)
 				}
 			}
+			for _, blocked := range []string{"User-agent: GPTBot", "User-agent: ClaudeBot"} {
+				if strings.Contains(rec.Body.String(), blocked) {
+					t.Errorf("robots.txt must not block %s", blocked)
+				}
+			}
 		case "/sitemap.xml":
 			var sitemap struct {
 				XMLName xml.Name
