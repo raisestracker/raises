@@ -892,12 +892,17 @@ func TestPublicDiscovery(t *testing.T) {
 					t.Errorf("missing robots directive %s", want)
 				}
 			}
+			for _, blocked := range []string{"User-agent: GPTBot", "User-agent: ClaudeBot"} {
+				if strings.Contains(rec.Body.String(), blocked) {
+					t.Errorf("robots.txt must not block %s", blocked)
+				}
+			}
 		case "/sitemap.xml":
 			var sitemap struct {
 				XMLName xml.Name
 				URLs    []struct {
 					Location string `xml:"loc"`
-					LastMod  string `xml:"lastmod"`
+					Lastmod  string `xml:"lastmod"`
 				} `xml:"url"`
 			}
 			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
@@ -910,10 +915,11 @@ func TestPublicDiscovery(t *testing.T) {
 				if !strings.HasPrefix(entry.Location, "https://raises.dev/") {
 					t.Fatalf("unexpected URL %s", entry.Location)
 				}
-				if entry.LastMod == "" {
-					t.Errorf("sitemap URL %s has no lastmod", entry.Location)
-				} else if _, err := time.Parse("2006-01-02", entry.LastMod); err != nil {
-					t.Errorf("sitemap URL %s has invalid lastmod %q", entry.Location, entry.LastMod)
+				lastmod, err := time.Parse("2006-01-02", entry.Lastmod)
+				if err != nil {
+					t.Errorf("sitemap URL %s has invalid lastmod %q: content-based lastmod is required", entry.Location, entry.Lastmod)
+				} else if lastmod.After(time.Now()) {
+					t.Errorf("sitemap URL %s has future lastmod %q", entry.Location, entry.Lastmod)
 				}
 				page := httptest.NewRecorder()
 				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, entry.Location, nil))
