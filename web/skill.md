@@ -5,6 +5,9 @@ description: Set up Raises or investigate scoped production exceptions and open 
 
 # Raises
 
+Author: Clay Lengel, Staff Writer for raises.dev.
+Updated November 23, 2026.
+
 Read https://raises.dev/llms.txt first.
 
 For migrations from Honeybadger, Rollbar, or Sentry, read https://raises.dev/migration.md. Its parallel-verification canary is an optional elevated-assurance path; use it only when the human requests production verification.

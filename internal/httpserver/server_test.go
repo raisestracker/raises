@@ -142,6 +142,42 @@ func TestHomepage(t *testing.T) {
 			t.Errorf("homepage is missing footer link %q", want)
 		}
 	}
+	const ldOpen = `<script type="application/ld+json">`
+	ldStart := strings.Index(rec.Body.String(), ldOpen)
+	if ldStart < 0 {
+		t.Fatal("homepage is missing Organization JSON-LD")
+	}
+	ldEnd := strings.Index(rec.Body.String()[ldStart:], "</script>")
+	if ldEnd < 0 {
+		t.Fatal("homepage has unterminated JSON-LD block")
+	}
+	var org struct {
+		Context     string   `json:"@context"`
+		Type        string   `json:"@type"`
+		Name        string   `json:"name"`
+		URL         string   `json:"url"`
+		Logo        string   `json:"logo"`
+		Description string   `json:"description"`
+		SameAs      []string `json:"sameAs"`
+	}
+	if err := json.Unmarshal([]byte(rec.Body.String()[ldStart+len(ldOpen):ldStart+ldEnd]), &org); err != nil {
+		t.Fatalf("homepage JSON-LD is invalid: %v", err)
+	}
+	if org.Context != "https://schema.org" || org.Type != "Organization" || org.Name == "" || org.URL == "" {
+		t.Errorf("homepage JSON-LD is missing Organization identity: %+v", org)
+	}
+	if org.URL != "https://raises.dev/" || org.Logo != "https://raises.dev/app-icon.png" {
+		t.Errorf("homepage JSON-LD has unexpected identity URLs: %+v", org)
+	}
+	found := false
+	for _, same := range org.SameAs {
+		if same == "https://github.com/raisestracker/raises" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("homepage JSON-LD is missing GitHub sameAs: %+v", org)
+	}
 	stylePath := regexp.MustCompile(`/assets/style-[a-f0-9]+\.css`).FindString(rec.Body.String())
 	if stylePath == "" {
 		t.Fatalf("homepage is missing a fingerprinted stylesheet: %s", rec.Body.String())
@@ -201,6 +237,7 @@ func TestAgentDocumentation(t *testing.T) {
 	}{
 		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry"}},
 		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN"}},
+		{path: "/skill.md", want: []string{"Author: Clay Lengel, Staff Writer for raises.dev.", "Updated November 23, 2026."}},
 		{path: "/changelog.md", want: []string{"Week of 2026-11-16", "Agent skill", "invalid-token traffic"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, test.path, nil)
