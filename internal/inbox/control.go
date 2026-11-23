@@ -202,23 +202,27 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 // otherwise the row keeps its empty project_id — invisible to tenant-scoped
 // reads and unreachable by ingestion — so mixed-tenant history needs an explicit
 // owner-authorized recovery decision instead of a guessed owner.
+//
+// The slug resolution runs exactly once, as part of the rebuild migration
+// below. Running it on every boot would let a project created after the
+// migration claim parked rows that share its slug.
 func (s *Store) ensureTenantIsolatedGroups(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE error_groups SET project_id = (
-			SELECT a.project_id FROM apps a
-			WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
-		) WHERE project_id = '' AND (
-			SELECT COUNT(*) FROM apps a
-			WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
-		) = 1
-	`); err != nil {
-		return fmt.Errorf("resolve legacy group projects: %w", err)
-	}
 	keyedBySlug, err := s.errorGroupsKeyedBySlug(ctx)
 	if err != nil {
 		return err
 	}
 	if keyedBySlug {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE error_groups SET project_id = (
+				SELECT a.project_id FROM apps a
+				WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
+			) WHERE project_id = '' AND (
+				SELECT COUNT(*) FROM apps a
+				WHERE a.slug = error_groups.app_name AND a.archived_at_unix IS NULL
+			) = 1
+		`); err != nil {
+			return fmt.Errorf("resolve legacy group projects: %w", err)
+		}
 		if err := s.rebuildErrorGroupsKeyedByProject(ctx); err != nil {
 			return err
 		}
