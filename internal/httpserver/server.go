@@ -186,6 +186,7 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /llms.txt", s.llmsText)
 	mux.HandleFunc("GET /skill.md", s.skillText)
 	mux.HandleFunc("GET /migration.md", s.migrationText)
+	mux.HandleFunc("GET /changelog.md", s.changelogText)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /version", s.version)
@@ -390,6 +391,10 @@ func (s *Server) skillText(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) migrationText(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Link", `<https://raises.dev/migration.md>; rel="canonical"`)
 	s.serveTextAsset(w, "migration.md", "text/markdown; charset=utf-8")
+}
+func (s *Server) changelogText(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Link", `<https://raises.dev/changelog.md>; rel="canonical"`)
+	s.serveTextAsset(w, "changelog.md", "text/markdown; charset=utf-8")
 }
 func (s *Server) serveTextAsset(w http.ResponseWriter, name, contentType string) {
 	body, err := web.FS.ReadFile(name)
