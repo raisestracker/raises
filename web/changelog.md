@@ -2,6 +2,8 @@
 
 Dated notes on what shipped, newest first.
 
+Updated 2026-11-23.
+
 ## Week of 2026-11-16
 
 - The homepage now links the [Agent skill](https://raises.dev/skill.md), so agents and search can find it.
