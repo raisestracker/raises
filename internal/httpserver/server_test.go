@@ -236,7 +236,7 @@ func TestAgentDocumentation(t *testing.T) {
 		want []string
 	}{
 		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry", "Author: Clay Lengel, Staff Writer for raises.dev."}},
-		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN"}},
+		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN", "Author: Clay Lengel, Staff Writer for raises.dev."}},
 		{path: "/skill.md", want: []string{"Author: Clay Lengel, Staff Writer for raises.dev.", "Updated November 23, 2026."}},
 		{path: "/changelog.md", want: []string{"Week of 2026-11-16", "Agent skill", "invalid-token traffic", "Updated 2026-11-23"}},
 	} {
