@@ -1,5 +1,8 @@
 # Migrate a Rails app to Raises
 
+Author: Clay Lengel, Staff Writer for raises.dev.
+Updated November 23, 2026.
+
 Source: https://github.com/raisestracker/raises
 
 This is an execution guide for coding agents migrating a Rails application from Honeybadger, Rollbar, or Sentry to [Raises](https://raises.dev).
