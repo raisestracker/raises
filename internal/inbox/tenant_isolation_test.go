@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -455,5 +456,80 @@ func TestLegacyAttributedCollisionSurvivesRepeatedMigration(t *testing.T) {
 	}
 	if !bRes.Created || bRes.Group.ID == 1 || bRes.Group.ProjectID != "prj_web_152" {
 		t.Fatalf("tenant B joined A's legacy group: %#v", bRes.Group)
+	}
+}
+
+// A parked legacy row (no live project used its slug at migration time) must
+// never be claimed by a project created after the migration, no matter how
+// many times the store reopens. Before the run-once fix, every Open
+// reassigned such rows to whoever now owns the slug.
+func TestParkedGroupNotClaimedByLaterProject(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	fp, location := Fingerprint("RuntimeError", []string{"app/jobs/work_job.rb:4:in `perform`"}, nil)
+	path := testPreFixDB(t, nil, []preFixGroup{
+		{appName: "api", projectID: "", env: "production", fingerprint: fp, location: location},
+	}, now)
+
+	open := func() *Store {
+		t.Helper()
+		store, err := Open(path, func() time.Time { return now }, &fakeFiler{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	parkedProject := func(store *Store) string {
+		t.Helper()
+		var projectID string
+		if err := store.db.QueryRowContext(ctx, `SELECT project_id FROM error_groups WHERE id = 1`).Scan(&projectID); err != nil {
+			t.Fatal(err)
+		}
+		return projectID
+	}
+
+	// Migration with no live "api" project leaves the row parked.
+	store := open()
+	assertTenantUniqueKey(t, store, ctx)
+	if got := parkedProject(store); got != "" {
+		t.Fatalf("migration reassigned unclaimed row to %q", got)
+	}
+
+	// Attacker creates project "api" after the migration.
+	ownerB, _ := store.UpsertGitHubUser(ctx, 202, "owner-b", "", "")
+	projectB, err := store.CreateProject(ctx, ownerB.ID, "API", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restarts must not move the parked row into the new project.
+	for boot := 0; boot < 2; boot++ {
+		store = open()
+		if got := parkedProject(store); got != "" {
+			_ = store.Close()
+			t.Fatalf("boot %d: parked row moved to %q", boot, got)
+		}
+		if _, err := store.GetForUser(ctx, ownerB.ID, 1); !errors.Is(err, ErrNotFound) {
+			_ = store.Close()
+			t.Fatalf("boot %d: attacker reads parked group: %v", boot, err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The new project still ingests into its own group, never the parked row.
+	store = open()
+	defer store.Close()
+	tokenB := issueTokenForProject(t, store, ctx, ownerB, projectB.ID)
+	res, err := store.Ingest(ctx, tokenB, sameNotice("DUMMY-B-VALUE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Created || res.Group.ID == 1 || res.Group.ProjectID != projectB.ID {
+		t.Fatalf("attacker joined parked group: %#v", res.Group)
 	}
 }
