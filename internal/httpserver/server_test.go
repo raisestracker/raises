@@ -137,10 +137,46 @@ func TestHomepage(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "G-16MS9N28TE") {
 		t.Fatal("homepage is missing Google tag")
 	}
-	for _, want := range []string{"https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", "/changelog.md"} {
+	for _, want := range []string{"https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", "/changelog.md", `href="/about"`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("homepage is missing footer link %q", want)
 		}
+	}
+	const ldOpen = `<script type="application/ld+json">`
+	ldStart := strings.Index(rec.Body.String(), ldOpen)
+	if ldStart < 0 {
+		t.Fatal("homepage is missing Organization JSON-LD")
+	}
+	ldEnd := strings.Index(rec.Body.String()[ldStart:], "</script>")
+	if ldEnd < 0 {
+		t.Fatal("homepage has unterminated JSON-LD block")
+	}
+	var org struct {
+		Context     string   `json:"@context"`
+		Type        string   `json:"@type"`
+		Name        string   `json:"name"`
+		URL         string   `json:"url"`
+		Logo        string   `json:"logo"`
+		Description string   `json:"description"`
+		SameAs      []string `json:"sameAs"`
+	}
+	if err := json.Unmarshal([]byte(rec.Body.String()[ldStart+len(ldOpen):ldStart+ldEnd]), &org); err != nil {
+		t.Fatalf("homepage JSON-LD is invalid: %v", err)
+	}
+	if org.Context != "https://schema.org" || org.Type != "Organization" || org.Name == "" || org.URL == "" {
+		t.Errorf("homepage JSON-LD is missing Organization identity: %+v", org)
+	}
+	if org.URL != "https://raises.dev/" || org.Logo != "https://raises.dev/app-icon.png" {
+		t.Errorf("homepage JSON-LD has unexpected identity URLs: %+v", org)
+	}
+	found := false
+	for _, same := range org.SameAs {
+		if same == "https://github.com/raisestracker/raises" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("homepage JSON-LD is missing GitHub sameAs: %+v", org)
 	}
 	stylePath := regexp.MustCompile(`/assets/style-[a-f0-9]+\.css`).FindString(rec.Body.String())
 	if stylePath == "" {
@@ -154,6 +190,44 @@ func TestHomepage(t *testing.T) {
 	}
 }
 
+func TestAboutPage(t *testing.T) {
+	handler, _, _ := testHandler(t)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/about", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("about = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("about content-type = %q", ct)
+	}
+	for _, want := range []string{
+		"About Raises",
+		`"@type": "Organization"`,
+		`"sameAs": ["https://github.com/raisestracker/raises"]`,
+		`datetime="2026-11-23"`,
+		`href="/"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("about page is missing %q", want)
+		}
+	}
+	text := regexp.MustCompile(`<[^>]+>`).ReplaceAllString(rec.Body.String(), " ")
+	if words := len(strings.Fields(text)); words < 80 {
+		t.Errorf("about page has %d visible words, need at least 80", words)
+	}
+
+	mdRec := httptest.NewRecorder()
+	mdReq := httptest.NewRequest(http.MethodGet, "/about", nil)
+	mdReq.Header.Set("Accept", "text/markdown")
+	handler.ServeHTTP(mdRec, mdReq)
+	if mdRec.Code != http.StatusOK || !strings.HasPrefix(mdRec.Header().Get("Content-Type"), "text/markdown") {
+		t.Fatalf("about markdown status=%d type=%s", mdRec.Code, mdRec.Header().Get("Content-Type"))
+	}
+	if !strings.HasPrefix(mdRec.Body.String(), "# About Raises") {
+		t.Error("about markdown body is invalid")
+	}
+}
+
 func TestAgentDocumentation(t *testing.T) {
 	handler, _, _ := testHandler(t)
 
@@ -161,8 +235,9 @@ func TestAgentDocumentation(t *testing.T) {
 		path string
 		want []string
 	}{
-		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry"}},
+		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry", "Author: Clay Lengel, Staff Writer for raises.dev."}},
 		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN", "Author: Clay Lengel, Staff Writer for raises.dev."}},
+		{path: "/skill.md", want: []string{"Author: Clay Lengel, Staff Writer for raises.dev.", "Updated November 23, 2026."}},
 		{path: "/changelog.md", want: []string{"Week of 2026-11-16", "Agent skill", "invalid-token traffic"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, test.path, nil)
@@ -917,7 +992,7 @@ func TestPublicDiscovery(t *testing.T) {
 			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
 				t.Fatal(err)
 			}
-			if sitemap.XMLName.Space != "http://www.sitemaps.org/schemas/sitemap/0.9" || len(sitemap.URLs) != 5 {
+			if sitemap.XMLName.Space != "http://www.sitemaps.org/schemas/sitemap/0.9" || len(sitemap.URLs) != 6 {
 				t.Fatalf("invalid sitemap: %+v", sitemap)
 			}
 			for _, entry := range sitemap.URLs {
@@ -946,6 +1021,7 @@ func TestIndexablePagesCanonical(t *testing.T) {
 		"/skill.md":     `<https://raises.dev/skill.md>; rel="canonical"`,
 		"/llms.txt":     `<https://raises.dev/llms.txt>; rel="canonical"`,
 		"/migration.md": `<https://raises.dev/migration.md>; rel="canonical"`,
+		"/about":        `<https://raises.dev/about>; rel="canonical"`,
 	} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

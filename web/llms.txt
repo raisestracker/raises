@@ -2,6 +2,9 @@
 
 > Error reporting for coding agents, not dashboards.
 
+Author: Clay Lengel, Staff Writer for raises.dev.
+Updated November 23, 2026.
+
 Raises receives application exceptions, groups recurrences, optionally files GitHub issues, and exposes the evidence to an authenticated coding agent. Official clients support Rails and Go.
 
 ## Setup

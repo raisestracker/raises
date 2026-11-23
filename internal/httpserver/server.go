@@ -171,6 +171,7 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
+	mux.HandleFunc("GET /about", s.about)
 	mux.HandleFunc("GET /style.css", s.stylesheet)
 	mux.HandleFunc("GET /assets/{name}", s.stylesheet)
 	mux.HandleFunc("GET /app-icon.png", s.appIcon)
@@ -301,6 +302,31 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	if err := tmpl.Execute(w, struct{ StylePath string }{StylePath: s.stylePath}); err != nil {
 		s.logger.Error("render index", "error", err)
+	}
+}
+
+func (s *Server) about(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "Accept")
+	w.Header().Set("Link", `</sitemap.xml>; rel="sitemap", <https://raises.dev/about>; rel="canonical"`)
+	w.Header().Set("Cache-Control", "no-cache")
+	if prefersMarkdown(r.Header.Values("Accept")) {
+		s.serveTextAsset(w, "about.md", "text/markdown; charset=utf-8")
+		return
+	}
+	body, err := web.FS.ReadFile("about.html")
+	if err != nil {
+		http.Error(w, "missing about", http.StatusInternalServerError)
+		return
+	}
+	tmpl, err := template.New("about").Parse(string(body))
+	if err != nil {
+		http.Error(w, "invalid about", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	if err := tmpl.Execute(w, struct{ StylePath string }{StylePath: s.stylePath}); err != nil {
+		s.logger.Error("render about", "error", err)
 	}
 }
 

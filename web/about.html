@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About Raises — error reporting for agents</title>
+    <meta name="description" content="What Raises is, how it works, and where to find its source, clients, and documentation.">
+    <link rel="icon" type="image/png" href="/app-icon.png">
+    <link rel="canonical" href="https://raises.dev/about">
+    <link rel="stylesheet" href="{{.StylePath}}">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Raises",
+      "url": "https://raises.dev/",
+      "logo": "https://raises.dev/app-icon.png",
+      "sameAs": ["https://github.com/raisestracker/raises"],
+      "description": "Error reporting for coding agents: application exceptions become structured evidence an agent can investigate, fix, and acknowledge."
+    }
+    </script>
+  </head>
+  <body>
+    <main class="mx-auto mt-[12vh] max-w-[34rem] px-6 max-sm:mt-[6vh]">
+      <div class="mb-5 flex items-center gap-3">
+        <img class="size-10 object-contain" src="/app-icon.png" alt="">
+        <h1 class="text-xl font-bold tracking-tight">About Raises</h1>
+      </div>
+      <p class="mb-4 text-muted" itemscope itemtype="https://schema.org/Organization">
+        <span itemprop="name">Raises</span> is error reporting for coding agents, not dashboards.
+        An application exception becomes structured evidence your coding agent can
+        <span itemprop="description">investigate, fix, and acknowledge</span>, instead of a chart
+        a human has to triage.
+      </p>
+      <h2 class="mb-3 text-base font-bold">How it works</h2>
+      <p class="mb-4 text-muted">Each report carries the evidence an agent needs: the exception,
+      its recent recurrences, and the in-app code around the failure. The agent reproduces the
+      problem, implements a fix, and acknowledges the error group. Teams that connect the optional
+      GitHub App also get automatic issues for new error groups.</p>
+      <h2 class="mb-3 text-base font-bold">Clients and self-hosting</h2>
+      <p class="mb-4 text-muted">Official clients support Rails 7.1 and later through the
+      <span class="font-mono text-[13px]">raises</span> gem and Go 1.22 and later through the
+      <span class="font-mono text-[13px]">raises-go</span> module. Reports authenticate with a
+      project ingestion token. The server is licensed AGPL-3.0-only and can be self-hosted with
+      Docker Compose; the self-hosting guide covers GitHub App setup, backups, and optional
+      integrations.</p>
+      <h2 class="mb-3 text-base font-bold">Source and contact</h2>
+      <p class="mb-4 text-muted">Raises is developed in the open at
+      <a class="font-semibold text-mint underline underline-offset-4 hover:text-white" href="https://github.com/raisestracker/raises">github.com/raisestracker/raises</a>,
+      where issues and proposals are welcome. Agent documentation lives at
+      <a class="font-semibold text-mint underline underline-offset-4 hover:text-white" href="/llms.txt">llms.txt</a>,
+      <a class="font-semibold text-mint underline underline-offset-4 hover:text-white" href="/skill.md">skill.md</a>, and
+      <a class="font-semibold text-mint underline underline-offset-4 hover:text-white" href="/migration.md">migration.md</a>.</p>
+      <p class="mb-4 text-xs text-quiet">Updated <time datetime="2026-11-23" itemprop="dateModified">November 23, 2026</time>.</p>
+      <footer class="mt-10 text-xs text-quiet">
+        <a class="hover:text-muted" href="/">Home</a>
+        <span aria-hidden="true">·</span>
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises">GitHub</a>
+        <span aria-hidden="true">·</span>
+        <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
+      </footer>
+    </main>
+  </body>
+</html>
