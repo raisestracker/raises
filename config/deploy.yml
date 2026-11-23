@@ -1,6 +1,9 @@
 service: raises
 image: raises
 
+# Keep at most 2 stopped rollback containers per host.
+retain_containers: 2
+
 servers:
   web:
     - <%= ENV.fetch("KAMAL_HOST") %>
