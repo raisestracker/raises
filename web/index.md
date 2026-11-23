@@ -12,4 +12,4 @@ An application exception becomes structured evidence your coding agent can inves
 Set up Raises for this application. Read https://raises.dev/llms.txt and ask me to sign in when authorization is required.
 ```
 
-[GitHub](https://github.com/raisestracker/raises) · [AGPL-3.0](https://github.com/raisestracker/raises/blob/master/LICENSE)
+[GitHub](https://github.com/raisestracker/raises) · [AGPL-3.0](https://github.com/raisestracker/raises/blob/master/LICENSE) · [What's New](https://raises.dev/changelog.md)

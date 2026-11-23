@@ -137,7 +137,7 @@ func TestHomepage(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "G-16MS9N28TE") {
 		t.Fatal("homepage is missing Google tag")
 	}
-	for _, want := range []string{"https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", "/changelog.md"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("homepage is missing footer link %q", want)
 		}
@@ -163,6 +163,7 @@ func TestAgentDocumentation(t *testing.T) {
 	}{
 		{path: "/llms.txt", want: []string{"https://raises.dev/migration.md", "Honeybadger", "Rollbar", "Sentry"}},
 		{path: "/migration.md", want: []string{"Migrate a Rails app to Raises", "Rails.error.report", "Optional elevated verification", "controlled production canary", "RAISES_TOKEN"}},
+		{path: "/changelog.md", want: []string{"Week of 2026-11-16", "Agent skill", "invalid-token traffic"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, test.path, nil)
 		rec := httptest.NewRecorder()
@@ -173,6 +174,14 @@ func TestAgentDocumentation(t *testing.T) {
 		for _, want := range test.want {
 			if !strings.Contains(rec.Body.String(), want) {
 				t.Errorf("%s is missing %q", test.path, want)
+			}
+		}
+		if test.path == "/changelog.md" {
+			if got := rec.Header().Get("Link"); !strings.Contains(got, `<https://raises.dev/changelog.md>; rel="canonical"`) {
+				t.Errorf("/changelog.md is missing self-referencing canonical Link header: %q", got)
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+				t.Errorf("/changelog.md content type = %q", ct)
 			}
 		}
 	}
@@ -908,7 +917,7 @@ func TestPublicDiscovery(t *testing.T) {
 			if err := xml.Unmarshal(rec.Body.Bytes(), &sitemap); err != nil {
 				t.Fatal(err)
 			}
-			if sitemap.XMLName.Space != "http://www.sitemaps.org/schemas/sitemap/0.9" || len(sitemap.URLs) != 4 {
+			if sitemap.XMLName.Space != "http://www.sitemaps.org/schemas/sitemap/0.9" || len(sitemap.URLs) != 5 {
 				t.Fatalf("invalid sitemap: %+v", sitemap)
 			}
 			for _, entry := range sitemap.URLs {
