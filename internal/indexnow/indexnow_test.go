@@ -205,7 +205,7 @@ func TestSitemapEntriesEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SitemapEntries(web.FS): %v", err)
 	}
-	if len(entries) != 5 {
-		t.Fatalf("got %d entries, want 5: %+v", len(entries), entries)
+	if len(entries) != 6 {
+		t.Fatalf("got %d entries, want 6: %+v", len(entries), entries)
 	}
 }
