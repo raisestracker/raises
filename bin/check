@@ -41,6 +41,32 @@ if ! grep -Eq '^USER [1-9][0-9]*([:][0-9]+)?$' Dockerfile; then
   exit 1
 fi
 
+section "Fork PRs must not reach self-hosted runners"
+# The go job executes PR head code on its runner. A static self-hosted
+# runs-on (or one that is not fork-conditional) lets a fork PR run attacker
+# code on our infrastructure once the fork-approval gate is passed, so fork
+# PRs must be routed to a GitHub-hosted runner.
+go_runs_on="$(awk '/^  go:/{in_go=1; next} /^  [A-Za-z]+:/{in_go=0} in_go && /^[[:space:]]+runs-on:/{sub(/^[[:space:]]+runs-on:[[:space:]]*/, ""); print; exit}' .github/workflows/ci.yml)"
+if [[ -z "$go_runs_on" ]]; then
+  printf 'go job has no runs-on in .github/workflows/ci.yml\n' >&2
+  exit 1
+fi
+if [[ "$go_runs_on" != *lbl-* && "$go_runs_on" != *self-hosted* ]]; then
+  printf 'go job never uses a self-hosted runner (%s).\n' "$go_runs_on"
+else
+  if [[ "$go_runs_on" != *fork* ]]; then
+    printf 'go job runs-on is not fork-conditional; fork PRs would run on %s\n' "$go_runs_on" >&2
+    exit 1
+  fi
+  fork_branch="$(printf '%s' "$go_runs_on" | sed -E "s/.*&&[[:space:]]*'([^']+)'.*/\1/")"
+  case "$fork_branch" in
+    ubuntu-*|macos-*|windows-*) printf 'fork PRs run on %s.\n' "$fork_branch" ;;
+    *)
+      printf 'go job fork branch must be a GitHub-hosted runner, got: %s\n' "$fork_branch" >&2
+      exit 1;;
+  esac
+fi
+
 section "Acceptance suite (Chromium, WebKit, API)"
 if [[ "${SKIP_ACCEPTANCE:-0}" == "1" ]]; then
   # The CI acceptance job covers this; lbl-linux has no container runtime.
