@@ -55,6 +55,7 @@ type config struct {
 	ntfyToken            string
 	webhookEncryptionKey string
 	indexNowEnabled      bool
+	gaMeasurementID      string
 }
 
 // revision is the deployed commit SHA served at GET /version. It is set at
@@ -310,6 +311,7 @@ func run(logger *slog.Logger) error {
 		GitHubApp:            githubApp,
 		SecureCookies:        strings.HasPrefix(conf.baseURL, "https://"),
 		OperationalReporter:  alerter,
+		GAMeasurementID:      conf.gaMeasurementID,
 	})
 	if err := httpserver.ListenAndServe(runCtx, conf.listenAddress, server.Handler(), logger); err != nil {
 		reportOperational("http-server", "HTTP server stopped", err.Error())
@@ -341,6 +343,7 @@ func loadConfig() (config, error) {
 		ntfyTopic:            os.Getenv("NTFY_TOPIC"),
 		ntfyToken:            os.Getenv("NTFY_TOKEN"),
 		webhookEncryptionKey: os.Getenv("WEBHOOK_ENCRYPTION_KEY"),
+		gaMeasurementID:      strings.TrimSpace(os.Getenv("GA_MEASUREMENT_ID")),
 	}
 	conf.indexNowEnabled = indexnow.Enabled(conf.baseURL, os.Getenv("INDEXNOW_ENABLED"))
 	parsedSendAt, err := time.Parse("15:04", envOr("REPORT_SEND_AT", "07:00"))

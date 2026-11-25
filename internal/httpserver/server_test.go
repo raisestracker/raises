@@ -134,8 +134,8 @@ func TestHomepage(t *testing.T) {
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("raises")) {
 		t.Fatalf("home = %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "G-16MS9N28TE") {
-		t.Fatal("homepage is missing Google tag")
+	if strings.Contains(rec.Body.String(), "G-16MS9N28TE") || strings.Contains(rec.Body.String(), "googletagmanager.com") {
+		t.Fatal("default homepage should not emit Google Analytics without GA_MEASUREMENT_ID")
 	}
 	for _, want := range []string{"https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0", "/changelog.md", `href="/about"`} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -439,10 +439,20 @@ func TestLoggedInSettingsIsAuthorizationConsole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings=%d %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/dashboard"`, `aria-current="page">Settings`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `id="bootstrap-form"`, `id="bootstrap-result"`, `id="bootstrap-prompt"`, `id="copy-bootstrap-prompt"`, `id="copy-bootstrap-prompt-status"`, `id="bootstrap-form-status"`, `Accept: "application/json"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
+	for _, want := range []string{"Bootstrap an agent", "Agent keys", "GitHub repository access", "example/widget", "Add or remove repositories", "https://github.com/settings/installations/123", "Issue delivery", "Webhook delivery", "Healthy", `href="/dashboard"`, `aria-current="page">Settings`, `id="agent-key-form"`, `id="agent-account-key"`, `id="copy-agent-key"`, `id="bootstrap-form"`, `id="bootstrap-result"`, `id="bootstrap-prompt"`, `id="copy-bootstrap-prompt"`, `id="copy-bootstrap-prompt-status"`, `id="bootstrap-form-status"`, "https://github.com/raisestracker/raises", "https://github.com/raisestracker/raises/blob/master/LICENSE", "AGPL-3.0"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("missing %q", want)
 		}
+	}
+	appJSPath := regexp.MustCompile(`/assets/app-[a-f0-9]+\.js`).FindString(rec.Body.String())
+	if appJSPath == "" {
+		t.Fatalf("settings page is missing fingerprinted app.js: %s", rec.Body.String())
+	}
+	jsReq := httptest.NewRequest(http.MethodGet, appJSPath, nil)
+	jsRec := httptest.NewRecorder()
+	handler.ServeHTTP(jsRec, jsReq)
+	if jsRec.Code != http.StatusOK || !strings.Contains(jsRec.Body.String(), `Accept: "application/json"`) {
+		t.Fatalf("app.js = %d body=%s", jsRec.Code, jsRec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "Create project") {
 		t.Fatal("settings should not contain project CRUD")

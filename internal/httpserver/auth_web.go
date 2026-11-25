@@ -28,6 +28,7 @@ type settingsData struct {
 	Installations   []settingsInstallation
 	InstallURL      string
 	StylePath       string
+	AppJSPath       string
 	BootstrapPrompt string
 	NewAgentToken   string
 	Delivery        settingsDeliveryHealth
@@ -277,7 +278,7 @@ func (s *Server) renderSettingsRequest(w http.ResponseWriter, r *http.Request, s
 		}
 		installationViews = append(installationViews, view)
 	}
-	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, Nav: s.nav(session, "settings")}
+	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, AppJSPath: s.appJSPath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, Nav: s.nav(session, "settings")}
 	s.renderPage(w, "settings.html", data)
 }
 

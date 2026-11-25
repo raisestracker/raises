@@ -117,6 +117,7 @@ type Config struct {
 	GitHubApp            GitHubApp
 	SecureCookies        bool
 	OperationalReporter  OperationalReporter
+	GAMeasurementID      string
 }
 
 type Server struct {
@@ -126,6 +127,9 @@ type Server struct {
 	handler   http.Handler
 	config    Config
 	stylePath string
+	appJSPath string
+	gaJSPath  string
+	csp       string
 	limitMu   sync.Mutex
 	limits    map[string]requestWindow
 }
@@ -161,19 +165,23 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	if config.Revision == "" {
 		config.Revision = "unknown"
 	}
+	config.GAMeasurementID = strings.TrimSpace(config.GAMeasurementID)
 	s := &Server{
 		store:     store,
 		logger:    logger,
 		bodyLimit: bodyLimit,
 		config:    config,
-		stylePath: embeddedStylesheetPath(),
+		stylePath: embeddedAssetPath("style.css", "style", ".css"),
+		appJSPath: embeddedAssetPath("app.js", "app", ".js"),
+		gaJSPath:  embeddedAssetPath("ga.js", "ga", ".js"),
+		csp:       buildContentSecurityPolicy(config.GAMeasurementID),
 		limits:    map[string]requestWindow{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
 	mux.HandleFunc("GET /about", s.about)
-	mux.HandleFunc("GET /style.css", s.stylesheet)
-	mux.HandleFunc("GET /assets/{name}", s.stylesheet)
+	mux.HandleFunc("GET /style.css", s.asset)
+	mux.HandleFunc("GET /assets/{name}", s.asset)
 	mux.HandleFunc("GET /app-icon.png", s.appIcon)
 	mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		s.serveTextAsset(w, "robots.txt", "text/plain; charset=utf-8")
@@ -241,28 +249,33 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /github/setup", s.githubSetup)
 	mux.HandleFunc("POST /github/setup", s.githubSetupPost)
 	mux.HandleFunc("POST /webhooks/github", s.githubWebhook)
-	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, secureHeaders(mux)))
+	s.handler = requestLogger(logger, recoverPanics(logger, config.OperationalReporter, secureHeaders(s.csp, mux)))
 	return s
 }
 
-// contentSecurityPolicy pins the only third-party code the console runs:
-// Google Fonts (every page) and Google Tag Manager (the public homepage).
-// Inline scripts stay allowed because the homepage gtag snippet and the
-// settings copy/mint script are inline; moving them to nonces is follow-up
-// work, not this change. Everything else — foreign scripts and styles,
-// plugins, frames, off-origin form targets — is denied.
-const contentSecurityPolicy = `default-src 'self'; ` +
-	`script-src 'self' https://www.googletagmanager.com 'unsafe-inline'; ` +
-	`style-src 'self' https://fonts.googleapis.com; ` +
-	`font-src 'self' https://fonts.gstatic.com; ` +
-	`img-src 'self' data:; ` +
-	`connect-src 'self' https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com; ` +
-	`object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`
+// buildContentSecurityPolicy emits a strict script-src with zero 'unsafe-inline'
+// in both default (GA-off) and opt-in GA4 modes. All first-party scripts load
+// from fingerprinted /assets/* files.
+func buildContentSecurityPolicy(gaMeasurementID string) string {
+	scriptSrc := "script-src 'self'"
+	connectSrc := "connect-src 'self'"
+	if strings.TrimSpace(gaMeasurementID) != "" {
+		scriptSrc += " https://www.googletagmanager.com"
+		connectSrc += " https://www.googletagmanager.com https://www.google-analytics.com https://*.google-analytics.com"
+	}
+	return "default-src 'self'; " +
+		scriptSrc + "; " +
+		"style-src 'self' https://fonts.googleapis.com; " +
+		"font-src 'self' https://fonts.gstatic.com; " +
+		"img-src 'self' data:; " +
+		connectSrc + "; " +
+		"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+}
 
-func secureHeaders(next http.Handler) http.Handler {
+func secureHeaders(csp string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -300,7 +313,15 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	if err := tmpl.Execute(w, struct{ StylePath string }{StylePath: s.stylePath}); err != nil {
+	if err := tmpl.Execute(w, struct {
+		StylePath       string
+		GAPath          string
+		GAMeasurementID string
+	}{
+		StylePath:       s.stylePath,
+		GAPath:          s.gaJSPath,
+		GAMeasurementID: s.config.GAMeasurementID,
+	}); err != nil {
 		s.logger.Error("render index", "error", err)
 	}
 }
@@ -368,27 +389,38 @@ func prefersMarkdown(headers []string) bool {
 	return markdown > 0 && markdown >= html
 }
 
-func embeddedStylesheetPath() string {
-	body, err := web.FS.ReadFile("style.css")
+func embeddedAssetPath(file, prefix, ext string) string {
+	body, err := web.FS.ReadFile(file)
 	if err != nil {
-		return "/assets/style.css"
+		return "/assets/" + prefix + ext
 	}
 	sum := sha256.Sum256(body)
-	return fmt.Sprintf("/assets/style-%x.css", sum[:8])
+	return fmt.Sprintf("/assets/%s-%x%s", prefix, sum[:8], ext)
 }
 
-func (s *Server) stylesheet(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/style.css" && r.URL.Path != s.stylePath {
+func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
+	var file, contentType string
+	immutable := true
+	switch r.URL.Path {
+	case "/style.css":
+		file, contentType, immutable = "style.css", "text/css; charset=utf-8", false
+	case s.stylePath:
+		file, contentType = "style.css", "text/css; charset=utf-8"
+	case s.appJSPath:
+		file, contentType = "app.js", "application/javascript; charset=utf-8"
+	case s.gaJSPath:
+		file, contentType = "ga.js", "application/javascript; charset=utf-8"
+	default:
 		http.NotFound(w, r)
 		return
 	}
-	body, err := web.FS.ReadFile("style.css")
+	body, err := web.FS.ReadFile(file)
 	if err != nil {
-		http.Error(w, "missing stylesheet", http.StatusInternalServerError)
+		http.Error(w, "missing asset", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	if r.URL.Path == s.stylePath {
+	w.Header().Set("Content-Type", contentType)
+	if immutable {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "no-store")

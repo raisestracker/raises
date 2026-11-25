@@ -20,15 +20,10 @@
       "sameAs": ["https://github.com/raisestracker/raises"]
     }
     </script>
-    <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-16MS9N28TE"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-
-      gtag('config', 'G-16MS9N28TE');
-    </script>
+    {{if .GAMeasurementID}}
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{.GAMeasurementID}}"></script>
+    <script defer src="{{.GAPath}}" data-ga-id="{{.GAMeasurementID}}"></script>
+    {{end}}
   </head>
   <body>
     <main class="mx-auto mt-[22vh] max-w-[34rem] px-6 max-sm:mt-[12vh]">
