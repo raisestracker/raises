@@ -21,6 +21,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.preAuthLimited(r) {
+		tooManyRequests(w)
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 		Name  string `json:"name"`
@@ -30,6 +34,10 @@ func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	token, key, err := s.store.ExchangeBootstrapToken(r.Context(), req.Token, req.Name)
 	if errors.Is(err, inbox.ErrUnauthorized) {
+		if s.failedAuthLimited(r) {
+			tooManyRequests(w)
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired bootstrap token"})
 		return
 	}
