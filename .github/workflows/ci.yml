@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: docker compose --env-file .env.example config
       - run: docker compose --env-file .env.example up --build -d
-      - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/healthz
+      - run: curl --fail --retry 10 --retry-delay 2 --retry-all-errors http://127.0.0.1:8080/healthz
       - run: curl --fail http://127.0.0.1:8080/readyz
       - if: always()
         run: docker compose --env-file .env.example down --volumes
