@@ -25,6 +25,7 @@
           {{template "snippet" (snippet "snippet-rails" "Rails" .Rails)}}
           {{template "snippet" (snippet "snippet-go" "Go" .Go)}}
           {{template "snippet" (snippet "snippet-js" "JavaScript (fetch)" .JS)}}
+          {{template "snippet" (snippet "snippet-sentry" "Sentry SDK (SENTRY_DSN)" .SentryDSN)}}
         </div>
         <p class="mt-4 text-sm text-muted">The error shows up in <a class="font-semibold text-ruby-light" href="/projects/{{.Project.Slug}}">{{.Project.Name}}</a> within seconds.</p>
       </section>

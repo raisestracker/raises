@@ -146,12 +146,13 @@ type dashboardProjectForm struct {
 // response (Cache-Control: no-store). The plaintext token is never placed in
 // a URL, a redirect, a cookie or any later GET.
 type projectReveal struct {
-	Project inbox.Project
-	Token   string
-	Curl    string
-	Rails   string
-	Go      string
-	JS      string
+	Project   inbox.Project
+	Token     string
+	Curl      string
+	Rails     string
+	Go        string
+	JS        string
+	SentryDSN string
 }
 
 const defaultPublicBaseURL = "https://raises.dev"
@@ -201,6 +202,16 @@ func quickstartSnippets(base, token string) (curl, rails, goSnippet, js string) 
 		"  });\n" +
 		"}\n"
 	return curl, rails, goSnippet, js
+}
+
+func sentryDSNSnippet(base, token string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "SENTRY_DSN=https://" + token + "@raises.dev/1\n"
+	}
+	dsn := u.Scheme + "://" + token + "@" + u.Host + "/1"
+	return "# Works with @sentry/node, sentry-python, sentry-go, and sentry-cocoa:\n" +
+		"SENTRY_DSN=" + dsn + "\n"
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +266,9 @@ func (s *Server) createDashboardProject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	reveal := &projectReveal{Project: project, Token: token}
-	reveal.Curl, reveal.Rails, reveal.Go, reveal.JS = quickstartSnippets(s.publicBaseURL(r), token)
+	base := s.publicBaseURL(r)
+	reveal.Curl, reveal.Rails, reveal.Go, reveal.JS = quickstartSnippets(base, token)
+	reveal.SentryDSN = sentryDSNSnippet(base, token)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	s.renderDashboard(w, r, session, http.StatusCreated, dashboardProjectForm{}, reveal)
 }

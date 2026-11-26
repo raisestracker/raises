@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -220,6 +221,8 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /version", s.version)
 	mux.HandleFunc("POST /v1/notices", s.createNotice)
+	mux.HandleFunc("POST /api/{project}/envelope/", s.ingestSentryEnvelope)
+	mux.HandleFunc("POST /api/{project}/envelope", s.ingestSentryEnvelope)
 	mux.HandleFunc("POST /v1/events", s.createEvent)
 	mux.HandleFunc("GET /v1/events", s.listEvents)
 	mux.HandleFunc("GET /v1/events/{id}", s.getEvent)
@@ -658,6 +661,153 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, result)
+}
+
+// ingestSentryEnvelope translates server-side Sentry SDK envelopes into Raises
+// error notices. Security invariants: X-Sentry-Auth header ONLY (?sentry_key=
+// query param is rejected 401), bounded gzip decompression (bodyLimit+1 -> 413),
+// max 10 event items per envelope charging postAuthIngestPerTokenLimit per item,
+// and project binding exclusively from the authenticated token's app.ID.
+func (s *Server) ingestSentryEnvelope(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("sentry_key") {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "sentry_key query parameter is not accepted; use X-Sentry-Auth header"})
+		return
+	}
+	projectParam := strings.TrimSpace(r.PathValue("project"))
+	if !validSentryProjectPlaceholder(projectParam) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid project path"})
+		return
+	}
+	token, ok := parseSentryAuthKey(r.Header.Get("X-Sentry-Auth"))
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing X-Sentry-Auth sentry_key"})
+		return
+	}
+	if s.preAuthLimited(r) {
+		tooManyRequests(w)
+		return
+	}
+	app, err := s.store.AppByToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, inbox.ErrUnauthorized) {
+			if s.failedAuthLimited(r) {
+				tooManyRequests(w)
+				return
+			}
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			return
+		}
+		s.logger.Error("auth sentry envelope", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store envelope"})
+		return
+	}
+	body, status, msg := s.readBoundedEnvelopeBody(w, r)
+	if status != 0 {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	eventID, notices, err := inbox.ParseSentryEnvelope(body)
+	if errors.Is(err, inbox.ErrSentryTooManyEvents) || errors.Is(err, inbox.ErrInvalidSentryEnvelope) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sentry envelope"})
+		return
+	}
+	rateKey := "ingest:token:" + inbox.HashToken(token)
+	chargeCount := len(notices)
+	if chargeCount == 0 {
+		chargeCount = 1
+	}
+	for i := 0; i < chargeCount; i++ {
+		if !s.allowRequest(rateKey, postAuthIngestPerTokenLimit) {
+			tooManyRequests(w)
+			return
+		}
+	}
+	for _, notice := range notices {
+		if _, err := s.store.IngestForApp(r.Context(), app, notice); err != nil {
+			if errors.Is(err, inbox.ErrLimit) {
+				w.Header().Set("Retry-After", "3600")
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "account error-group limit reached"})
+				return
+			}
+			s.logger.Error("ingest sentry envelope", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store notice"})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": eventID})
+}
+
+func (s *Server) readBoundedEnvelopeBody(w http.ResponseWriter, r *http.Request) ([]byte, int, string) {
+	limited := http.MaxBytesReader(w, r.Body, s.bodyLimit)
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Content-Encoding")), "gzip") {
+		gz, err := gzip.NewReader(limited)
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				return nil, http.StatusRequestEntityTooLarge, "request body too large"
+			}
+			return nil, http.StatusBadRequest, "invalid gzip body"
+		}
+		defer gz.Close()
+		body, err := io.ReadAll(io.LimitReader(gz, s.bodyLimit+1))
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				return nil, http.StatusRequestEntityTooLarge, "request body too large"
+			}
+			return nil, http.StatusBadRequest, "could not read gzip body"
+		}
+		if int64(len(body)) > s.bodyLimit {
+			return nil, http.StatusRequestEntityTooLarge, "request body too large"
+		}
+		return body, 0, ""
+	}
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return nil, http.StatusRequestEntityTooLarge, "request body too large"
+		}
+		return nil, http.StatusBadRequest, "could not read request body"
+	}
+	return body, 0, ""
+}
+
+func parseSentryAuthKey(header string) (string, bool) {
+	trimmed := strings.TrimSpace(header)
+	if len(trimmed) < len("Sentry ") || !strings.EqualFold(trimmed[:len("Sentry ")], "Sentry ") {
+		return "", false
+	}
+	for _, part := range strings.Split(trimmed[len("Sentry "):], ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(k), "sentry_key") {
+			val := strings.Trim(strings.TrimSpace(v), `"`)
+			if val != "" {
+				return val, true
+			}
+		}
+	}
+	return "", false
+}
+
+func validSentryProjectPlaceholder(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) populateGroupURL(g *inbox.Group) {
