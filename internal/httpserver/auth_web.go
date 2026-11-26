@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -502,6 +503,40 @@ func (s *Server) browserUnsuppressError(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) storeNow() time.Time { return time.Now().UTC() }
+
+// browserAckError and browserResolveError complete triage from the inspector
+// with plain CSRF-checked form posts (no JavaScript). An invalid CSRF token is
+// a 403 before any lookup; a group the session does not own is a 404, so the
+// endpoint never reveals whether another tenant's ID exists.
+func (s *Server) browserAckError(w http.ResponseWriter, r *http.Request) {
+	s.browserErrorTransition(w, r, s.store.AckForUser)
+}
+
+func (s *Server) browserResolveError(w http.ResponseWriter, r *http.Request) {
+	s.browserErrorTransition(w, r, s.store.ResolveForUser)
+}
+
+func (s *Server) browserErrorTransition(w http.ResponseWriter, r *http.Request, apply func(context.Context, int64, int64) (inbox.Group, error)) {
+	session, ok := s.browserPOST(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := apply(r.Context(), session.User.ID, id); err != nil {
+		if errors.Is(err, inbox.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("browser error transition", "error", err)
+		http.Error(w, "could not update error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/errors/%d", id), http.StatusSeeOther)
+}
 
 func ageLabel(age time.Duration) string {
 	if age < time.Minute {

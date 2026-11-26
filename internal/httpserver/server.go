@@ -258,6 +258,8 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /errors/{id}", s.errorDetail)
 	mux.HandleFunc("POST /errors/{id}/suppress", s.browserSuppressError)
 	mux.HandleFunc("POST /errors/{id}/unsuppress", s.browserUnsuppressError)
+	mux.HandleFunc("POST /errors/{id}/ack", s.browserAckError)
+	mux.HandleFunc("POST /errors/{id}/resolve", s.browserResolveError)
 	mux.HandleFunc("POST /settings/bootstrap", s.createBootstrap)
 	mux.HandleFunc("POST /settings/agent-keys", s.createBrowserAgentKey)
 	mux.HandleFunc("POST /settings/agent-keys/{id}/revoke", s.revokeBrowserAgentKey)
