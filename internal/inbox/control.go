@@ -612,17 +612,30 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Durati
 }
 
 func (s *Store) SessionByToken(ctx context.Context, token string) (Session, error) {
-	var userID, expires int64
-	var csrf string
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, csrf_token, expires_at_unix FROM sessions WHERE token_hash = ? AND expires_at_unix > ?`, HashToken(token), s.now().UTC().Unix()).Scan(&userID, &csrf, &expires)
+	var (
+		u                User
+		csrf             string
+		expires          int64
+		created, updated int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.id, u.github_id, u.login, u.name, u.avatar_url, u.created_at_unix, u.updated_at_unix,
+		       s.csrf_token, s.expires_at_unix
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = ? AND s.expires_at_unix > ?
+	`, HashToken(token), s.now().UTC().Unix()).Scan(
+		&u.ID, &u.GitHubID, &u.Login, &u.Name, &u.AvatarURL, &created, &updated,
+		&csrf, &expires,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrUnauthorized
 	}
 	if err != nil {
 		return Session{}, err
 	}
-	u, err := s.userByID(ctx, userID)
-	return Session{User: u, CSRFToken: csrf, ExpiresAt: time.Unix(expires, 0).UTC()}, err
+	u.CreatedAt, u.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
+	return Session{User: u, CSRFToken: csrf, ExpiresAt: time.Unix(expires, 0).UTC()}, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, token string) error {

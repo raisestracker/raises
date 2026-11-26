@@ -162,3 +162,51 @@ func TestHotQueriesExplainPlan(t *testing.T) {
 		}
 	}
 }
+
+func TestUserErrorCountsAndNoticesForUser(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "e08.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	owner, _ := store.UpsertGitHubUser(ctx, 8810, "e08-owner", "", "")
+	other, _ := store.UpsertGitHubUser(ctx, 8811, "e08-other", "", "")
+	proj1, err := store.CreateProject(ctx, owner.ID, "App One", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj2, err := store.CreateProject(ctx, owner.ID, "App Two", "app-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok1, _, _ := store.CreateProjectToken(ctx, owner.ID, proj1.ID)
+	tok2, _, _ := store.CreateProjectToken(ctx, owner.ID, proj2.ID)
+
+	g1, err := store.Ingest(ctx, tok1, Notice{Class: "ErrA", Message: "m1", Backtrace: []string{"app/a.rb:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Ingest(ctx, tok2, Notice{Class: "ErrB", Message: "m2", Backtrace: []string{"app/b.rb:1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Archive proj2: UserErrorCounts must exclude archived projects.
+	if _, err := store.SetProjectArchived(ctx, owner.ID, proj2.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	open, fixed, total, err := store.UserErrorCounts(ctx, owner.ID)
+	if err != nil || open != 1 || fixed != 0 || total != 1 {
+		t.Fatalf("UserErrorCounts = (%d, %d, %d, %v), want (1, 0, 1, nil)", open, fixed, total, err)
+	}
+
+	// NoticesForUser returns owner's notices and rejects cross-tenant with ErrNotFound.
+	notices, err := store.NoticesForUser(ctx, owner.ID, g1.Group.ID, 10)
+	if err != nil || len(notices) != 1 {
+		t.Fatalf("owner NoticesForUser = (%d, %v)", len(notices), err)
+	}
+	if _, err := store.NoticesForUser(ctx, other.ID, g1.Group.ID, 10); err != ErrNotFound {
+		t.Fatalf("cross-tenant NoticesForUser err = %v, want ErrNotFound", err)
+	}
+}

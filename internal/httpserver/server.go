@@ -62,6 +62,7 @@ type Store interface {
 	DashboardForUser(context.Context, int64) (inbox.DashboardStats, error)
 	ProjectBySlug(context.Context, int64, string) (inbox.Project, error)
 	ProjectCounts(context.Context, string) (int, int, int, error)
+	UserErrorCounts(context.Context, int64) (int, int, int, error)
 	ResolveByIssue(context.Context, int64, int64, int) (int, error)
 	ReopenByIssue(context.Context, int64, int64, int) (int, error)
 	GetForUser(context.Context, int64, int64) (inbox.Group, error)

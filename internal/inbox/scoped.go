@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -56,10 +57,49 @@ func (s *Store) GetForUser(ctx context.Context, userID, id int64) (Group, error)
 }
 
 func (s *Store) NoticesForUser(ctx context.Context, userID, id int64, limit int) ([]Notice, error) {
-	if _, err := s.GetForUser(ctx, userID, id); err != nil {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.payload_json
+		FROM notices n
+		JOIN error_groups g ON g.id = n.group_id
+		JOIN apps a ON a.project_id = g.project_id
+		WHERE a.owner_user_id = ? AND g.id = ?
+		ORDER BY n.id DESC LIMIT ?
+	`, userID, id, limit)
+	if err != nil {
 		return nil, err
 	}
-	return s.Notices(ctx, id, limit)
+	defer rows.Close()
+	var notices []Notice
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var notice Notice
+		if err := json.Unmarshal([]byte(raw), &notice); err != nil {
+			return nil, err
+		}
+		notices = append(notices, notice)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(notices) > 0 {
+		return notices, nil
+	}
+	// 0 notices returned: verify ownership so missing or cross-tenant IDs return ErrNotFound.
+	var exists int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM error_groups g JOIN apps a ON a.project_id = g.project_id
+		WHERE a.owner_user_id = ? AND g.id = ?
+	`, userID, id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return notices, err
 }
 
 func (s *Store) AckForUser(ctx context.Context, userID, id int64) (Group, error) {

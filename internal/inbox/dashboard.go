@@ -342,6 +342,17 @@ func (s *Store) ProjectCounts(ctx context.Context, projectID string) (open, fixe
 	return
 }
 
+// UserErrorCounts returns open/fixed/total error counts across all active
+// projects owned by userID in one indexed query.
+func (s *Store) UserErrorCounts(ctx context.Context, userID int64) (open, fixed, total int, err error) {
+	err = s.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COUNT(*)
+		FROM error_groups g JOIN apps a ON a.project_id = g.project_id
+		WHERE a.owner_user_id = ? AND a.archived_at_unix IS NULL`,
+		statusClause(StatusOpen, "g."), statusClause(StatusFixed, "g.")), userID).Scan(&open, &fixed, &total)
+	return
+}
+
 // SetIssueForTest links a group to a GitHub issue number without calling GitHub.
 func (s *Store) SetIssueForTest(ctx context.Context, id int64, number int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE error_groups SET github_issue_number = ? WHERE id = ?`, number, id)

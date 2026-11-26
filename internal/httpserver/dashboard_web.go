@@ -211,12 +211,7 @@ func (s *Server) renderErrorList(w http.ResponseWriter, r *http.Request, session
 	if project != nil {
 		open, fixed, _, err = s.store.ProjectCounts(r.Context(), project.ID)
 	} else {
-		var stats inbox.DashboardStats
-		stats, err = s.store.DashboardForUser(r.Context(), session.User.ID)
-		for _, p := range stats.ProjectSummary {
-			open += p.Open
-			fixed += p.Fixed
-		}
+		open, fixed, _, err = s.store.UserErrorCounts(r.Context(), session.User.ID)
 	}
 	if err != nil {
 		http.Error(w, "could not load counts", 500)

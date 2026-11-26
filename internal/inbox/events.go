@@ -268,6 +268,13 @@ func (s *Store) pruneEventsTx(ctx context.Context, tx *sql.Tx, ownerID int64, no
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE owner_user_id=? AND created_at_unix<?`, ownerID, now.Add(-eventRetention).Unix()); err != nil {
 		return err
 	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE owner_user_id=?`, ownerID).Scan(&count); err != nil {
+		return err
+	}
+	if count <= MaxEventsPerAccount {
+		return nil
+	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM events WHERE owner_user_id=? AND id NOT IN (SELECT id FROM events WHERE owner_user_id=? ORDER BY created_at_unix DESC,id DESC LIMIT ?)`, ownerID, ownerID, MaxEventsPerAccount)
 	return err
 }
