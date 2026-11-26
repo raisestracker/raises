@@ -171,6 +171,8 @@ func (s *Store) initializeEvents(ctx context.Context) error {
 			UNIQUE(event_id, destination_kind, endpoint_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_pending ON outbound_deliveries(state, next_attempt_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_owner_kind ON outbound_deliveries(owner_user_id, destination_kind, state, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_events_created ON outbound_events(created_at_unix)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

@@ -186,8 +186,19 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_project_id ON apps(project_id) WHERE project_id != ''`); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_owner_slug ON apps(owner_user_id,slug) WHERE owner_user_id != 0`)
-	return err
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_owner_slug ON apps(owner_user_id,slug) WHERE owner_user_id != 0`); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_apps_project_lookup ON apps(project_id, archived_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_apps_owner_archived_project ON apps(owner_user_id, archived_at_unix, project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_apps_github_repo_install ON apps(github_repository_id, github_installation_id, project_id)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ensureTenantIsolatedGroups re-keys error grouping from the per-owner slug
@@ -227,9 +238,14 @@ func (s *Store) ensureTenantIsolatedGroups(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_error_groups_project_env_fp ON error_groups(project_id, env, fingerprint) WHERE project_id != ''`)
-	if err != nil {
-		return fmt.Errorf("index error groups by project: %w", err)
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_error_groups_project_env_fp ON error_groups(project_id, env, fingerprint) WHERE project_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_error_groups_project_last_seen ON error_groups(project_id, last_seen_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_error_groups_issue ON error_groups(github_issue_number, project_id)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("index error groups by project: %w", err)
+		}
 	}
 	return nil
 }
@@ -465,8 +481,10 @@ func (s *Store) initializeControlPlane(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at_unix)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_keys_hash ON agent_keys(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_keys_user_created ON agent_keys(user_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_tokens_hash ON project_tokens(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_jobs_pending ON issue_jobs(state, next_attempt_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_jobs_group_state ON issue_jobs(group_id, state, created_at_unix)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
