@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -231,8 +232,11 @@ func run(logger *slog.Logger) error {
 			logger.Error("send operational alert", "key", key, "error", err)
 		}
 	}
+	var workerWG sync.WaitGroup
 	runProtected := func(key, title string, worker func()) {
+		workerWG.Add(1)
 		go func() {
+			defer workerWG.Done()
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					details := fmt.Sprintf("Panic: %v\n\n%s", recovered, debug.Stack())
@@ -313,11 +317,36 @@ func run(logger *slog.Logger) error {
 		OperationalReporter:  alerter,
 		GAMeasurementID:      conf.gaMeasurementID,
 	})
-	if err := httpserver.ListenAndServe(runCtx, conf.listenAddress, server.Handler(), logger); err != nil {
-		reportOperational("http-server", "HTTP server stopped", err.Error())
-		return err
+	serverErr := httpserver.ListenAndServe(runCtx, conf.listenAddress, server.Handler(), logger)
+	stop()
+	if !drainWorkers(&workerWG, workerDrainTimeout) {
+		logger.Warn("background workers did not finish before shutdown timeout", "timeout", workerDrainTimeout.String())
+	}
+	if serverErr != nil {
+		reportOperational("http-server", "HTTP server stopped", serverErr.Error())
+		return serverErr
 	}
 	return nil
+}
+
+const workerDrainTimeout = 10 * time.Second
+
+// drainWorkers waits for all tracked background workers to exit before
+// store.Close() runs, bounded by timeout so SIGTERM cannot hang indefinitely.
+func drainWorkers(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func loadConfig() (config, error) {
