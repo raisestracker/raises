@@ -9,10 +9,20 @@ import (
 )
 
 func (s *Store) ListForUser(ctx context.Context, userID int64, project string, unacked bool) ([]Group, error) {
-	query := `
-		SELECT g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+	return s.ListForUserCompact(ctx, userID, project, unacked, false)
+}
+
+func (s *Store) ListForUserCompact(ctx context.Context, userID int64, project string, unacked, compact bool) ([]Group, error) {
+	cols := `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json`
+	if compact {
+		cols = `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix`
+	}
+	query := `
+		SELECT ` + cols + `
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id
 		WHERE a.owner_user_id = ?
 	`
@@ -32,7 +42,15 @@ func (s *Store) ListForUser(ctx context.Context, userID int64, project string, u
 	defer rows.Close()
 	var groups []Group
 	for rows.Next() {
-		group, err := scanGroup(rows)
+		var (
+			group Group
+			err   error
+		)
+		if compact {
+			group, err = scanGroupCompact(rows)
+		} else {
+			group, err = scanGroup(rows)
+		}
 		if err != nil {
 			return nil, err
 		}

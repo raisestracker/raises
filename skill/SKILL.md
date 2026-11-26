@@ -5,25 +5,17 @@ description: Set up Raises or investigate scoped production exceptions and open 
 
 # Raises
 
-Source: https://github.com/raisestracker/raises
+Read https://raises.dev/llms.txt first.
 
-Read `https://raises.dev/llms.txt` before setup. Use `Authorization: Bearer $RAISES_AGENT_TOKEN` for agent endpoints. Keep the token in the user's approved secret manager; never commit or echo it.
+For migrations from Honeybadger, Rollbar, or Sentry, read https://raises.dev/migration.md. Its parallel-verification canary is an optional elevated-assurance path; use it only when the human requests production verification.
 
-## Setup
+Use `Authorization: Bearer $RAISES_AGENT_TOKEN` for agent endpoints. Keep the token in the user's approved secret manager; never commit or echo it.
 
-1. Ask the human to sign in at `https://raises.dev` and create a one-time bootstrap prompt.
-2. Exchange the bootstrap credential, store the returned agent key securely, and create a project through the API.
-3. Create a project ingestion token, configure `RAISES_TOKEN` in the application secret manager, and install the matching client: `gem "raises"` for Rails or `github.com/raisestracker/raises-go` for Go.
-4. If the human installed the optional GitHub App, bind one of the repositories returned by `/v1/github/repositories`.
-5. Only when the human requests elevated production verification, trigger a controlled exception and verify it through the scoped errors API.
-
-Use `Raises.notify("message", level: :info, context: {}, source: nil)` in Rails or `client.Notify(ctx, "message", raises.Event{Level: raises.Info})` in Go for operational information that must not create an error group or GitHub issue. Query retained notices through `/v1/events`.
-
-Agents can manage up to 20 signed account-scoped integrations through `/v1/webhook-endpoints`. If a destination requires authentication, send `authorization_header` and `authorization_value` together when creating the endpoint. Use the complete header value, such as `Authorization: Bearer <secret>` or `X-Webhook-Secret: <secret>`. Raises encrypts the value and omits it from API responses. Omit both fields on update to preserve the current authorization header, provide both to replace it, or send both as empty strings to clear it. Store destination secrets and each one-time signing secret securely. Send a test delivery, inspect `/v1/webhook-deliveries`, and retry only dead deliveries.
+For fleets of apps, ask the human to create one account key in the settings UI; it mints further agent keys via `POST /v1/agent-keys` (list and revoke with `GET`/`DELETE /v1/agent-keys`) without another browser round-trip.
 
 ## Investigate
 
-1. `GET /v1/errors?app=<project-slug>&unacked=1`
+1. `GET /v1/errors?app=<project-slug>&status=open&page=1&per_page=25&compact=1` (add `compact=1` to omit heavy `sample` payloads on list views)
 2. `GET /v1/errors/:id`
 3. `GET /v1/errors/:id/notices?limit=5`
 4. Open the first in-app file from `location` and reproduce the error.
@@ -31,4 +23,12 @@ Agents can manage up to 20 signed account-scoped integrations through `/v1/webho
 6. Open a draft PR referencing `github_issue_url` when present.
 7. `POST /v1/errors/:id/ack` only after the draft PR exists.
 
+Known false positives can be suppressed with `POST /v1/errors/:id/suppress`. Suppression is store-only for that exact group: Raises keeps notices and increments counts, but future recurrences do not clear acknowledgement, do not enqueue webhooks or ntfy, and do not open or reopen GitHub issues. The group disappears from `unacked=1` listings without deleting evidence. Restore normal behavior for future occurrences with `POST /v1/errors/:id/unsuppress`; unsuppress never retroactively delivers missed notifications or changes an existing GitHub issue.
+
 Do not merge, close issues, expose credentials, or make production changes without the user's authorization.
+
+## Informational notices
+
+Use `Raises.notify("message", level: :info, context: {}, source: nil)` in Rails or `client.Notify(ctx, "message", raises.Event{Level: raises.Info})` in Go when the application should report an operational event without creating an exception or GitHub issue. Query these events with `GET /v1/events?project=<project-slug>&level=info` and fetch one with `GET /v1/events/:id`.
+
+Manage up to 20 account-scoped outbound destinations with `/v1/webhook-endpoints`. A create or secret-rotation response shows its signing secret once. Store that value in the user's approved secret manager and never print or commit it. If the destination requires authentication, set `authorization_header` and `authorization_value` together. The value is the complete header value, such as `Bearer <secret>` for `Authorization` or the raw secret for `X-Webhook-Secret`. Raises encrypts the value and never returns it. Omit both fields on update to preserve the current authorization header, provide both to replace it, or send both as empty strings to clear it. Use the test route before relying on a destination, inspect `/v1/webhook-deliveries`, and retry only dead deliveries. The full contract is at https://github.com/raisestracker/raises/blob/master/docs/api.md.

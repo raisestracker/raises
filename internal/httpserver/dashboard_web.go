@@ -127,7 +127,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load dashboard", 500)
 		return
 	}
-	recent, err := s.store.ListPageForUser(r.Context(), session.User.ID, "", inbox.StatusAll, 1, 10)
+	recent, err := s.store.ListPageForUserCompact(r.Context(), session.User.ID, "", inbox.StatusAll, 1, 10, true)
 	if err != nil {
 		http.Error(w, "could not load recent errors", 500)
 		return
@@ -202,7 +202,7 @@ func (s *Server) renderErrorList(w http.ResponseWriter, r *http.Request, session
 	if project != nil {
 		projectKey, base, title = project.ID, "/projects/"+url.PathEscape(project.Slug), project.Name
 	}
-	result, err := s.store.ListPageForUser(r.Context(), session.User.ID, projectKey, status, page, inbox.DefaultPageSize)
+	result, err := s.store.ListPageForUserCompact(r.Context(), session.User.ID, projectKey, status, page, inbox.DefaultPageSize, true)
 	if err != nil {
 		http.Error(w, "could not load errors", 500)
 		return

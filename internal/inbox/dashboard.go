@@ -73,6 +73,12 @@ type ErrorPage struct {
 // ListPageForUser returns one page of a user's errors, newest activity first.
 // project may be a project id or slug; empty means all projects.
 func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, status string, page, pageSize int) (ErrorPage, error) {
+	return s.ListPageForUserCompact(ctx, userID, project, status, page, pageSize, false)
+}
+
+// ListPageForUserCompact returns one page of a user's errors; when compact is
+// true, sample_json is omitted from the SQL projection and JSON serialization.
+func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, project, status string, page, pageSize int, compact bool) (ErrorPage, error) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = DefaultPageSize
 	}
@@ -99,10 +105,16 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 	if page > pages {
 		page = pages
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+	cols := `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json`
+	if compact {
+		cols = `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix`
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+cols+`
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where+`
 		ORDER BY g.last_seen_unix DESC, g.id DESC LIMIT ? OFFSET ?`,
 		append(args, pageSize, (page-1)*pageSize)...)
@@ -112,7 +124,15 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 	defer rows.Close()
 	out := ErrorPage{Groups: []Group{}, Page: page, PageSize: pageSize, Total: total, Pages: pages}
 	for rows.Next() {
-		group, err := scanGroup(rows)
+		var (
+			group Group
+			err   error
+		)
+		if compact {
+			group, err = scanGroupCompact(rows)
+		} else {
+			group, err = scanGroup(rows)
+		}
 		if err != nil {
 			return ErrorPage{}, err
 		}

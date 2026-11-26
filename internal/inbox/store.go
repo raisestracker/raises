@@ -65,11 +65,12 @@ type Group struct {
 	LastRevision      string     `json:"last_revision"`
 	GitHubIssueNumber int        `json:"github_issue_number,omitempty"`
 	GitHubIssueURL    string     `json:"github_issue_url,omitempty"`
+	URL               string     `json:"url,omitempty"`
 	AckedAt           *time.Time `json:"acked_at,omitempty"`
 	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
 	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
 	Status            string     `json:"status"`
-	Sample            Notice     `json:"sample"`
+	Sample            Notice     `json:"sample,omitzero"`
 }
 
 type IngestResult struct {
@@ -683,6 +684,37 @@ func scanGroup(row rowScanner) (Group, error) {
 		return Group{}, err
 	}
 	_ = json.Unmarshal([]byte(sampleRaw), &group.Sample)
+	if ackedUnix.Valid {
+		t := time.Unix(ackedUnix.Int64, 0).UTC()
+		group.AckedAt = &t
+	}
+	if suppressedUnix.Valid {
+		t := time.Unix(suppressedUnix.Int64, 0).UTC()
+		group.SuppressedAt = &t
+	}
+	if resolvedUnix.Valid {
+		t := time.Unix(resolvedUnix.Int64, 0).UTC()
+		group.ResolvedAt = &t
+	}
+	group.Status = group.ComputeStatus()
+	return group, nil
+}
+
+func scanGroupCompact(row rowScanner) (Group, error) {
+	var (
+		group          Group
+		ackedUnix      sql.NullInt64
+		suppressedUnix sql.NullInt64
+		resolvedUnix   sql.NullInt64
+	)
+	err := row.Scan(
+		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
+		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
+		&ackedUnix, &suppressedUnix, &resolvedUnix,
+	)
+	if err != nil {
+		return Group{}, err
+	}
 	if ackedUnix.Valid {
 		t := time.Unix(ackedUnix.Int64, 0).UTC()
 		group.AckedAt = &t

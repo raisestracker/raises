@@ -18,7 +18,7 @@ For fleets of apps, ask the human to create one account key in the settings UI; 
 
 ## Investigate
 
-1. `GET /v1/errors?app=<project-slug>&unacked=1`
+1. `GET /v1/errors?app=<project-slug>&status=open&page=1&per_page=25&compact=1` (add `compact=1` to omit heavy `sample` payloads on list views)
 2. `GET /v1/errors/:id`
 3. `GET /v1/errors/:id/notices?limit=5`
 4. Open the first in-app file from `location` and reproduce the error.

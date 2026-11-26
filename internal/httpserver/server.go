@@ -58,7 +58,9 @@ type Store interface {
 	CreateProjectToken(context.Context, int64, string) (string, inbox.ProjectToken, error)
 	RevokeProjectToken(context.Context, int64, string, string) error
 	ListForUser(context.Context, int64, string, bool) ([]inbox.Group, error)
+	ListForUserCompact(context.Context, int64, string, bool, bool) ([]inbox.Group, error)
 	ListPageForUser(context.Context, int64, string, string, int, int) (inbox.ErrorPage, error)
+	ListPageForUserCompact(context.Context, int64, string, string, int, int, bool) (inbox.ErrorPage, error)
 	DashboardForUser(context.Context, int64) (inbox.DashboardStats, error)
 	ProjectBySlug(context.Context, int64, string) (inbox.Project, error)
 	ProjectCounts(context.Context, string) (int, int, int, error)
@@ -591,11 +593,86 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store notice"})
 		return
 	}
+	s.populateGroupURL(&result.Group)
 	status := http.StatusCreated
 	if !result.Created {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, result)
+}
+
+func (s *Server) populateGroupURL(g *inbox.Group) {
+	base := strings.TrimRight(strings.TrimSpace(s.config.BaseURL), "/")
+	if base == "" || g.ID < 1 {
+		return
+	}
+	g.URL = fmt.Sprintf("%s/errors/%d", base, g.ID)
+}
+
+func (s *Server) populateGroupURLs(groups []inbox.Group) {
+	base := strings.TrimRight(strings.TrimSpace(s.config.BaseURL), "/")
+	if base == "" {
+		return
+	}
+	for i := range groups {
+		if groups[i].ID >= 1 {
+			groups[i].URL = fmt.Sprintf("%s/errors/%d", base, groups[i].ID)
+		}
+	}
+}
+
+type compactGroup struct {
+	ID                int64      `json:"id"`
+	App               string     `json:"app"`
+	Env               string     `json:"env"`
+	Class             string     `json:"class"`
+	Location          string     `json:"location"`
+	Message           string     `json:"message"`
+	Count             int        `json:"count"`
+	LastSeen          time.Time  `json:"last_seen"`
+	GitHubIssueNumber int        `json:"github_issue_number,omitempty"`
+	GitHubIssueURL    string     `json:"github_issue_url,omitempty"`
+	URL               string     `json:"url,omitempty"`
+	AckedAt           *time.Time `json:"acked_at,omitempty"`
+	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
+	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	Status            string     `json:"status"`
+}
+
+type compactErrorPage struct {
+	Groups   []compactGroup `json:"errors"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+	Total    int            `json:"total"`
+	Pages    int            `json:"pages"`
+}
+
+func toCompactGroups(groups []inbox.Group) []compactGroup {
+	out := make([]compactGroup, len(groups))
+	for i, g := range groups {
+		msg := g.Message
+		if runes := []rune(msg); len(runes) > 160 {
+			msg = string(runes[:160]) + "…"
+		}
+		out[i] = compactGroup{
+			ID:                g.ID,
+			App:               g.App,
+			Env:               g.Env,
+			Class:             g.Class,
+			Location:          g.Location,
+			Message:           msg,
+			Count:             g.Count,
+			LastSeen:          g.LastSeen,
+			GitHubIssueNumber: g.GitHubIssueNumber,
+			GitHubIssueURL:    g.GitHubIssueURL,
+			URL:               g.URL,
+			AckedAt:           g.AckedAt,
+			SuppressedAt:      g.SuppressedAt,
+			ResolvedAt:        g.ResolvedAt,
+			Status:            g.Status,
+		}
+	}
+	return out
 }
 
 func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
@@ -604,6 +681,7 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	compact := query.Get("compact") == "1" || query.Get("compact") == "true"
 	if query.Has("status") || query.Has("page") || query.Has("per_page") {
 		status := inbox.NormalizeStatus(query.Get("status"), inbox.StatusAll)
 		if raw := query.Get("status"); raw != "" && status == inbox.StatusAll && !strings.EqualFold(raw, "all") {
@@ -612,22 +690,38 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 		}
 		page, _ := strconv.Atoi(query.Get("page"))
 		perPage, _ := strconv.Atoi(query.Get("per_page"))
-		result, err := s.store.ListPageForUser(r.Context(), userID, query.Get("app"), status, page, perPage)
+		result, err := s.store.ListPageForUserCompact(r.Context(), userID, query.Get("app"), status, page, perPage, compact)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list errors"})
+			return
+		}
+		s.populateGroupURLs(result.Groups)
+		if compact {
+			writeJSON(w, http.StatusOK, compactErrorPage{
+				Groups:   toCompactGroups(result.Groups),
+				Page:     result.Page,
+				PageSize: result.PageSize,
+				Total:    result.Total,
+				Pages:    result.Pages,
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	unacked := r.URL.Query().Get("unacked") == "1" || r.URL.Query().Get("unacked") == "true"
-	groups, err := s.store.ListForUser(r.Context(), userID, r.URL.Query().Get("app"), unacked)
+	unacked := query.Get("unacked") == "1" || query.Get("unacked") == "true"
+	groups, err := s.store.ListForUserCompact(r.Context(), userID, query.Get("app"), unacked, compact)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list errors"})
 		return
 	}
 	if groups == nil {
 		groups = []inbox.Group{}
+	}
+	s.populateGroupURLs(groups)
+	if compact {
+		writeJSON(w, http.StatusOK, toCompactGroups(groups))
+		return
 	}
 	writeJSON(w, http.StatusOK, groups)
 }
@@ -777,6 +871,7 @@ func (s *Server) getError(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load error"})
 		return
 	}
+	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
 }
 
@@ -825,6 +920,7 @@ func (s *Server) ackError(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not ack error"})
 		return
 	}
+	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
 }
 
@@ -847,6 +943,7 @@ func (s *Server) suppressError(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not suppress error"})
 		return
 	}
+	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
 }
 
@@ -869,6 +966,7 @@ func (s *Server) unsuppressError(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not unsuppress error"})
 		return
 	}
+	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
 }
 
