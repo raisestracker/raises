@@ -61,7 +61,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if projects == nil {
 		projects = []inbox.Project{}
 	}
-	writeJSON(w, http.StatusOK, projects)
+	writeJSONWithETag(w, r, http.StatusOK, projects)
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {

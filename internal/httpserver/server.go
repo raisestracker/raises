@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,6 +143,7 @@ type Server struct {
 	stylePath string
 	appJSPath string
 	gaJSPath  string
+	docETags  map[string]string
 	csp       string
 	limitMu   sync.Mutex
 	limits    map[string]requestWindow
@@ -187,8 +189,13 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 		stylePath: embeddedAssetPath("style.css", "style", ".css"),
 		appJSPath: embeddedAssetPath("app.js", "app", ".js"),
 		gaJSPath:  embeddedAssetPath("ga.js", "ga", ".js"),
-		csp:       buildContentSecurityPolicy(config.GAMeasurementID),
-		limits:    map[string]requestWindow{},
+		docETags: map[string]string{
+			"llms.txt":     embeddedAssetETag("llms.txt"),
+			"skill.md":     embeddedAssetETag("skill.md"),
+			"migration.md": embeddedAssetETag("migration.md"),
+		},
+		csp:    buildContentSecurityPolicy(config.GAMeasurementID),
+		limits: map[string]requestWindow{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.root)
@@ -459,17 +466,25 @@ func (s *Server) appIcon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-func (s *Server) llmsText(w http.ResponseWriter, _ *http.Request) {
+func embeddedAssetETag(file string) string {
+	body, err := web.FS.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	return weakETag(body)
+}
+
+func (s *Server) llmsText(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Link", `<https://raises.dev/llms.txt>; rel="canonical"`)
-	s.serveTextAsset(w, "llms.txt", "text/plain; charset=utf-8")
+	s.serveTextAssetWithETag(w, r, "llms.txt", "text/plain; charset=utf-8")
 }
-func (s *Server) skillText(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) skillText(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Link", `<https://raises.dev/skill.md>; rel="canonical"`)
-	s.serveTextAsset(w, "skill.md", "text/markdown; charset=utf-8")
+	s.serveTextAssetWithETag(w, r, "skill.md", "text/markdown; charset=utf-8")
 }
-func (s *Server) migrationText(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) migrationText(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Link", `<https://raises.dev/migration.md>; rel="canonical"`)
-	s.serveTextAsset(w, "migration.md", "text/markdown; charset=utf-8")
+	s.serveTextAssetWithETag(w, r, "migration.md", "text/markdown; charset=utf-8")
 }
 func (s *Server) changelogText(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Link", `<https://raises.dev/changelog.md>; rel="canonical"`)
@@ -479,6 +494,24 @@ func (s *Server) serveTextAsset(w http.ResponseWriter, name, contentType string)
 	body, err := web.FS.ReadFile(name)
 	if err != nil {
 		http.NotFound(w, nil)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	_, _ = w.Write(body)
+}
+func (s *Server) serveTextAssetWithETag(w http.ResponseWriter, r *http.Request, name, contentType string) {
+	body, err := web.FS.ReadFile(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	etag := s.docETags[name]
+	if etag == "" {
+		etag = weakETag(body)
+	}
+	w.Header().Set("ETag", etag)
+	if r != nil && (r.Method == http.MethodGet || r.Method == http.MethodHead) && ifNoneMatchMatches(r.Header.Values("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -736,7 +769,7 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 		}
 		s.populateGroupURLs(result.Groups)
 		if compact {
-			writeJSON(w, http.StatusOK, compactErrorPage{
+			writeJSONWithETag(w, r, http.StatusOK, compactErrorPage{
 				Groups:   toCompactGroups(result.Groups),
 				Page:     result.Page,
 				PageSize: result.PageSize,
@@ -745,7 +778,7 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeJSON(w, http.StatusOK, result)
+		writeJSONWithETag(w, r, http.StatusOK, result)
 		return
 	}
 	unacked := query.Get("unacked") == "1" || query.Get("unacked") == "true"
@@ -759,10 +792,10 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 	}
 	s.populateGroupURLs(groups)
 	if compact {
-		writeJSON(w, http.StatusOK, toCompactGroups(groups))
+		writeJSONWithETag(w, r, http.StatusOK, toCompactGroups(groups))
 		return
 	}
-	writeJSON(w, http.StatusOK, groups)
+	writeJSONWithETag(w, r, http.StatusOK, groups)
 }
 
 func (s *Server) allowRequest(key string, limit int) bool {
@@ -1264,6 +1297,78 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func weakETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	var buf [36]byte
+	buf[0] = 'W'
+	buf[1] = '/'
+	buf[2] = '"'
+	hex.Encode(buf[3:35], sum[:16])
+	buf[35] = '"'
+	return string(buf[:])
+}
+
+// ifNoneMatchMatches implements RFC 9110 §13.1.2 weak entity-tag comparison
+// against one or more If-None-Match header values.
+func ifNoneMatchMatches(headers []string, etag string) bool {
+	target := strings.TrimPrefix(strings.TrimSpace(etag), "W/")
+	if target == "" {
+		return false
+	}
+	for _, raw := range headers {
+		for _, part := range splitETagList(raw) {
+			candidate := strings.TrimSpace(part)
+			if candidate == "" {
+				continue
+			}
+			if candidate == "*" {
+				return true
+			}
+			if strings.TrimPrefix(candidate, "W/") == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func splitETagList(raw string) []string {
+	var parts []string
+	inQuote := false
+	start := 0
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			inQuote = !inQuote
+		case ',':
+			if !inQuote {
+				parts = append(parts, raw[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, raw[start:])
+	return parts
+}
+
+func writeJSONWithETag(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		writeJSON(w, status, payload)
+		return
+	}
+	body = append(body, '\n')
+	etag := weakETag(body)
+	w.Header().Set("ETag", etag)
+	if r != nil && (r.Method == http.MethodGet || r.Method == http.MethodHead) && ifNoneMatchMatches(r.Header.Values("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
