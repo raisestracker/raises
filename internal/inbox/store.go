@@ -667,6 +667,45 @@ func (s *Store) Unsuppress(ctx context.Context, id int64) (Group, error) {
 	return s.Get(ctx, id)
 }
 
+// Resolve is tenant-unsafe: it marks any error group resolved store-only
+// (setting resolved_at_unix and preserving or setting acked_at_unix) without
+// making outbound GitHub API calls. HTTP handlers must use ResolveForUser.
+func (s *Store) Resolve(ctx context.Context, id int64) (Group, error) {
+	now := s.now().UTC().Unix()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
+		WHERE id = ?
+	`, now, now, id)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+// Reopen is tenant-unsafe: it reopens any error group store-only by clearing
+// both resolved_at_unix and acked_at_unix so its status returns to open.
+// HTTP handlers must use ReopenForUser.
+func (s *Store) Reopen(ctx context.Context, id int64) (Group, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = NULL, acked_at_unix = NULL
+		WHERE id = ?
+	`, id)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

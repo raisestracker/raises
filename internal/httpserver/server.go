@@ -72,6 +72,8 @@ type Store interface {
 	AckForUser(context.Context, int64, int64) (inbox.Group, error)
 	SuppressForUser(context.Context, int64, int64) (inbox.Group, error)
 	UnsuppressForUser(context.Context, int64, int64) (inbox.Group, error)
+	ResolveForUser(context.Context, int64, int64) (inbox.Group, error)
+	ReopenForUser(context.Context, int64, int64) (inbox.Group, error)
 	UpsertInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
 	ListInstallations(context.Context, int64) ([]inbox.GitHubInstallation, error)
 	InstallationUserID(context.Context, int64) (int64, error)
@@ -212,6 +214,8 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /v1/errors/{id}", s.getError)
 	mux.HandleFunc("GET /v1/errors/{id}/notices", s.listNotices)
 	mux.HandleFunc("POST /v1/errors/{id}/ack", s.ackError)
+	mux.HandleFunc("POST /v1/errors/{id}/resolve", s.resolveError)
+	mux.HandleFunc("POST /v1/errors/{id}/reopen", s.reopenError)
 	mux.HandleFunc("POST /v1/errors/{id}/suppress", s.suppressError)
 	mux.HandleFunc("POST /v1/errors/{id}/unsuppress", s.unsuppressError)
 	mux.HandleFunc("POST /v1/bootstrap/exchange", s.exchangeBootstrap)
@@ -974,6 +978,52 @@ func (s *Server) unsuppressError(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not unsuppress error"})
+		return
+	}
+	s.populateGroupURL(&group)
+	writeJSON(w, http.StatusOK, group)
+}
+
+func (s *Server) resolveError(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.agentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	group, err := s.store.ResolveForUser(r.Context(), userID, id)
+	if errors.Is(err, inbox.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not resolve error"})
+		return
+	}
+	s.populateGroupURL(&group)
+	writeJSON(w, http.StatusOK, group)
+}
+
+func (s *Server) reopenError(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.agentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	group, err := s.store.ReopenForUser(r.Context(), userID, id)
+	if errors.Is(err, inbox.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not reopen error"})
 		return
 	}
 	s.populateGroupURL(&group)

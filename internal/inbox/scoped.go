@@ -141,6 +141,43 @@ func (s *Store) UnsuppressForUser(ctx context.Context, userID, id int64) (Group,
 	return s.Unsuppress(ctx, id)
 }
 
+func (s *Store) ResolveForUser(ctx context.Context, userID, id int64) (Group, error) {
+	now := s.now().UTC().Unix()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
+		WHERE id = ? AND EXISTS (
+			SELECT 1 FROM apps a WHERE a.project_id = error_groups.project_id AND a.owner_user_id = ?
+		)
+	`, now, now, id, userID)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.GetForUser(ctx, userID, id)
+}
+
+func (s *Store) ReopenForUser(ctx context.Context, userID, id int64) (Group, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = NULL, acked_at_unix = NULL
+		WHERE id = ? AND EXISTS (
+			SELECT 1 FROM apps a WHERE a.project_id = error_groups.project_id AND a.owner_user_id = ?
+		)
+	`, id, userID)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.GetForUser(ctx, userID, id)
+}
+
 func normalizeProjectSlug(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
