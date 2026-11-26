@@ -51,9 +51,15 @@ func TestSecurityHeadersOnPublicAndAPIResponses(t *testing.T) {
 		}
 		if path == "/" {
 			body := rec.Body.String()
-			for _, forbid := range []string{"googletagmanager.com", "G-16MS9N28TE", "<script"} {
+			for _, forbid := range []string{"googletagmanager.com", "G-16MS9N28TE"} {
 				if strings.Contains(body, forbid) {
 					t.Fatalf("default homepage must not contain %q", forbid)
+				}
+			}
+			// Only non-executable JSON-LD structured data blocks may use <script>.
+			for _, tag := range regexp.MustCompile(`(?i)<script\b[^>]*>`).FindAllString(body, -1) {
+				if strings.ToLower(tag) != `<script type="application/ld+json">` {
+					t.Fatalf("default homepage must not contain executable script tag %q", tag)
 				}
 			}
 		}
