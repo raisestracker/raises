@@ -19,7 +19,7 @@ func TestStoreInterfaceHasNoUnscopedReads(t *testing.T) {
 		}
 	}
 	required := []string{
-		"ListForUser", "GetForUser", "NoticesForUser",
+		"ListForUser", "GetForUser", "NoticesForUser", "RemediationContextForUser",
 		"AckForUser", "SuppressForUser", "UnsuppressForUser",
 		"ResolveForUser", "ReopenForUser", "ClaimForUser", "ReleaseForUser",
 	}

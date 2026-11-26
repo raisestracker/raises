@@ -872,6 +872,13 @@ func issueTitle(group Group) string {
 	return title
 }
 
+// FenceFor returns a fenced-code-block fence one run longer than any backtick
+// run in the value (at least three backticks), so the value cannot break out of
+// its fenced block.
+func FenceFor(value string) string {
+	return fenceFor(value)
+}
+
 // fenceFor returns a fenced-code-block fence one run longer than any
 // backtick run in the value (at least three backticks), so the value cannot
 // break out of its fenced block.

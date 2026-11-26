@@ -71,6 +71,7 @@ type Store interface {
 	ReopenByIssue(context.Context, int64, int64, int) (int, error)
 	GetForUser(context.Context, int64, int64) (inbox.Group, error)
 	NoticesForUser(context.Context, int64, int64, int) ([]inbox.Notice, error)
+	RemediationContextForUser(context.Context, int64, int64, int) (inbox.RemediationContext, error)
 	AckForUser(context.Context, int64, int64) (inbox.Group, error)
 	SuppressForUser(context.Context, int64, int64) (inbox.Group, error)
 	UnsuppressForUser(context.Context, int64, int64) (inbox.Group, error)
@@ -216,6 +217,7 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("GET /v1/events/{id}", s.getEvent)
 	mux.HandleFunc("GET /v1/errors", s.listErrors)
 	mux.HandleFunc("GET /v1/errors/{id}", s.getError)
+	mux.HandleFunc("GET /v1/errors/{id}/context", s.getErrorContext)
 	mux.HandleFunc("GET /v1/errors/{id}/notices", s.listNotices)
 	mux.HandleFunc("POST /v1/errors/{id}/ack", s.ackError)
 	mux.HandleFunc("POST /v1/errors/{id}/resolve", s.resolveError)
@@ -886,6 +888,25 @@ func (s *Server) getError(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
+	w.Header().Add("Vary", "Accept")
+	if prefersMarkdownAPI(r.Header.Values("Accept")) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rc, err := s.store.RemediationContextForUser(r.Context(), userID, id, limit)
+		if errors.Is(err, inbox.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load error"})
+			return
+		}
+		s.populateGroupSummaryURL(&rc.Group)
+		md := RenderRemediationMarkdown(rc)
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, md)
+		return
+	}
 	group, err := s.store.GetForUser(r.Context(), userID, id)
 	if errors.Is(err, inbox.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -897,6 +918,38 @@ func (s *Server) getError(w http.ResponseWriter, r *http.Request) {
 	}
 	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
+}
+
+func (s *Server) getErrorContext(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.agentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rc, err := s.store.RemediationContextForUser(r.Context(), userID, id, limit)
+	if errors.Is(err, inbox.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load error context"})
+		return
+	}
+	s.populateGroupSummaryURL(&rc.Group)
+	writeJSON(w, http.StatusOK, rc)
+}
+
+func (s *Server) populateGroupSummaryURL(g *inbox.GroupSummary) {
+	base := strings.TrimRight(strings.TrimSpace(s.config.BaseURL), "/")
+	if base == "" || g.ID < 1 {
+		return
+	}
+	g.URL = fmt.Sprintf("%s/errors/%d", base, g.ID)
 }
 
 func (s *Server) listNotices(w http.ResponseWriter, r *http.Request) {

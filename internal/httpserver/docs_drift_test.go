@@ -32,12 +32,19 @@ func TestSkillDocParity(t *testing.T) {
 	if !strings.Contains(string(webSkill), wantCompact) {
 		t.Fatalf("web/skill.md missing compact Step 1 query %q", wantCompact)
 	}
+	wantContext := "/v1/errors/:id/context"
+	if !strings.Contains(string(webSkill), wantContext) {
+		t.Fatalf("web/skill.md missing canonical context route %q", wantContext)
+	}
 	llms, err := os.ReadFile(filepath.Join("..", "..", "web", "llms.txt"))
 	if err != nil {
 		t.Fatalf("read web/llms.txt: %v", err)
 	}
 	if !strings.Contains(string(llms), wantCompact) {
 		t.Fatalf("web/llms.txt missing compact list query %q", wantCompact)
+	}
+	if !strings.Contains(string(llms), wantContext) {
+		t.Fatalf("web/llms.txt missing canonical context route %q", wantContext)
 	}
 }
 
