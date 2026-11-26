@@ -37,17 +37,18 @@ type App struct {
 }
 
 type Notice struct {
-	App        string         `json:"app"`
-	Env        string         `json:"env"`
-	Revision   string         `json:"revision"`
-	Handled    bool           `json:"handled"`
-	Class      string         `json:"class"`
-	Message    string         `json:"message"`
-	Backtrace  []string       `json:"backtrace"`
-	Location   string         `json:"location"`
-	Context    map[string]any `json:"context,omitempty"`
-	Request    map[string]any `json:"request,omitempty"`
-	ReceivedAt time.Time      `json:"received_at"`
+	App         string         `json:"app"`
+	Env         string         `json:"env"`
+	Revision    string         `json:"revision"`
+	Handled     bool           `json:"handled"`
+	Class       string         `json:"class"`
+	Message     string         `json:"message"`
+	Backtrace   []string       `json:"backtrace"`
+	Location    string         `json:"location"`
+	Fingerprint []string       `json:"fingerprint,omitempty"`
+	Context     map[string]any `json:"context,omitempty"`
+	Request     map[string]any `json:"request,omitempty"`
+	ReceivedAt  time.Time      `json:"received_at"`
 }
 
 type Group struct {
@@ -336,6 +337,9 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 }
 
 func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (IngestResult, error) {
+	if err := ValidateFingerprintParts(notice.Fingerprint); err != nil {
+		return IngestResult{}, err
+	}
 	if notice.Class == "" {
 		notice.Class = "RuntimeError"
 	}
@@ -344,7 +348,7 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 	}
 	notice.App = app.Name
 	notice.ReceivedAt = s.now().UTC()
-	fp, location := Fingerprint(notice.Class, notice.Backtrace, notice.Context)
+	fp, location := FingerprintWithCustom(notice.Class, notice.Backtrace, notice.Context, notice.Fingerprint)
 	notice.Location = location
 
 	tx, err := s.db.BeginTx(ctx, nil)

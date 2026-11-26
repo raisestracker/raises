@@ -3,10 +3,22 @@ package inbox
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
+
+const (
+	MaxCustomFingerprintParts = 10
+	MaxCustomFingerprintRunes = 256
+)
+
+// ErrInvalidFingerprint is returned when a notice supplies a malformed or
+// oversized custom fingerprint array.
+var ErrInvalidFingerprint = errors.New("invalid fingerprint")
 
 var fileLine = regexp.MustCompile(`([^:\s]+\.[[:alnum:]]+):(\d+)`)
 
@@ -32,6 +44,65 @@ func Fingerprint(class string, backtrace []string, context map[string]any) (fing
 		}
 	}
 	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:16]), location
+}
+
+// ValidateFingerprintParts checks an optional client-supplied custom
+// fingerprint array. A nil slice means omitted (valid); an explicit empty
+// slice, >10 parts, empty/whitespace-only parts, or >256 total runes returns
+// ErrInvalidFingerprint.
+func ValidateFingerprintParts(parts []string) error {
+	if parts == nil {
+		return nil
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("%w: fingerprint array must not be empty", ErrInvalidFingerprint)
+	}
+	if len(parts) > MaxCustomFingerprintParts {
+		return fmt.Errorf("%w: fingerprint may have at most %d parts", ErrInvalidFingerprint, MaxCustomFingerprintParts)
+	}
+	totalRunes := 0
+	for _, p := range parts {
+		if !utf8.ValidString(p) {
+			return fmt.Errorf("%w: fingerprint parts must be valid UTF-8", ErrInvalidFingerprint)
+		}
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			return fmt.Errorf("%w: fingerprint parts must be non-empty", ErrInvalidFingerprint)
+		}
+		totalRunes += utf8.RuneCountInString(p)
+		if totalRunes > MaxCustomFingerprintRunes {
+			return fmt.Errorf("%w: fingerprint exceeds %d runes", ErrInvalidFingerprint, MaxCustomFingerprintRunes)
+		}
+	}
+	return nil
+}
+
+func isDefaultFingerprintToken(part string) bool {
+	trimmed := strings.TrimSpace(part)
+	return trimmed == "{{ default }}" || trimmed == "{{default}}"
+}
+
+// FingerprintWithCustom computes the group fingerprint and code location,
+// honoring an optional validated custom fingerprint array with {{ default }}
+// substitution. When custom is nil or empty, it is identical to Fingerprint.
+func FingerprintWithCustom(class string, backtrace []string, context map[string]any, custom []string) (fingerprint, location string) {
+	defaultFP, location := Fingerprint(class, backtrace, context)
+	if len(custom) == 0 {
+		return defaultFP, location
+	}
+	if len(custom) == 1 && isDefaultFingerprintToken(custom[0]) {
+		return defaultFP, location
+	}
+	resolved := make([]string, len(custom))
+	for i, part := range custom {
+		if isDefaultFingerprintToken(part) {
+			resolved[i] = defaultFP
+		} else {
+			resolved[i] = strings.TrimSpace(part)
+		}
+	}
+	sum := sha256.Sum256([]byte("custom|" + strings.Join(resolved, "\x1f")))
 	return hex.EncodeToString(sum[:16]), location
 }
 

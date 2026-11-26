@@ -500,13 +500,14 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 type noticeRequest struct {
-	App      string         `json:"app"`
-	Env      string         `json:"env"`
-	Revision string         `json:"revision"`
-	Handled  bool           `json:"handled"`
-	Error    noticeError    `json:"error"`
-	Context  map[string]any `json:"context"`
-	Request  map[string]any `json:"request"`
+	App         string         `json:"app"`
+	Env         string         `json:"env"`
+	Revision    string         `json:"revision"`
+	Handled     bool           `json:"handled"`
+	Fingerprint []string       `json:"fingerprint,omitempty"`
+	Error       noticeError    `json:"error"`
+	Context     map[string]any `json:"context"`
+	Request     map[string]any `json:"request"`
 }
 
 type noticeError struct {
@@ -568,17 +569,26 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "error is required"})
 		return
 	}
+	if err := inbox.ValidateFingerprintParts(req.Fingerprint); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	result, err := s.store.IngestForApp(r.Context(), app, inbox.Notice{
-		App:       req.App,
-		Env:       req.Env,
-		Revision:  req.Revision,
-		Handled:   req.Handled,
-		Class:     req.Error.Class,
-		Message:   req.Error.Message,
-		Backtrace: req.Error.Backtrace,
-		Context:   req.Context,
-		Request:   req.Request,
+		App:         req.App,
+		Env:         req.Env,
+		Revision:    req.Revision,
+		Handled:     req.Handled,
+		Class:       req.Error.Class,
+		Message:     req.Error.Message,
+		Backtrace:   req.Error.Backtrace,
+		Fingerprint: req.Fingerprint,
+		Context:     req.Context,
+		Request:     req.Request,
 	})
+	if errors.Is(err, inbox.ErrInvalidFingerprint) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if errors.Is(err, inbox.ErrUnauthorized) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return

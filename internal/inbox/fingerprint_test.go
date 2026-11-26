@@ -253,3 +253,71 @@ func BenchmarkClassifyFrameNotice(b *testing.B) {
 		}
 	}
 }
+
+func TestCustomFingerprintValidationAndConsolidation(t *testing.T) {
+	// Valid cases
+	if err := ValidateFingerprintParts(nil); err != nil {
+		t.Fatalf("nil should be valid: %v", err)
+	}
+	if err := ValidateFingerprintParts([]string{"db-pool-exhausted"}); err != nil {
+		t.Fatalf("single part should be valid: %v", err)
+	}
+	if err := ValidateFingerprintParts([]string{"{{ default }}", "checkout"}); err != nil {
+		t.Fatalf("{{ default }} should be valid: %v", err)
+	}
+	tenParts := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	if err := ValidateFingerprintParts(tenParts); err != nil {
+		t.Fatalf("10 parts should be valid: %v", err)
+	}
+	exact256 := []string{strings.Repeat("a", 256)}
+	if err := ValidateFingerprintParts(exact256); err != nil {
+		t.Fatalf("256 runes should be valid: %v", err)
+	}
+
+	// Invalid cases
+	invalid := [][]string{
+		{},
+		{""},
+		{"   "},
+		{"ok", ""},
+		{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"},
+		{strings.Repeat("a", 257)},
+		{strings.Repeat("a", 130), strings.Repeat("b", 127)},
+	}
+	for i, parts := range invalid {
+		if err := ValidateFingerprintParts(parts); err == nil {
+			t.Fatalf("case %d (%v): expected error", i, parts)
+		}
+	}
+
+	// Consolidation across distinct files/classes
+	fp1, loc1 := FingerprintWithCustom("PG::ConnectionBad", []string{"app/models/order.rb:12"}, nil, []string{"db-pool-exhausted"})
+	fp2, loc2 := FingerprintWithCustom("Timeout::Error", []string{"app/jobs/sync.rb:99"}, nil, []string{"db-pool-exhausted"})
+	if fp1 != fp2 {
+		t.Fatalf("custom fingerprint should consolidate: %s vs %s", fp1, fp2)
+	}
+	if loc1 == loc2 {
+		t.Fatalf("expected distinct preserved locations: %q vs %q", loc1, loc2)
+	}
+
+	// {{ default }} alone matches default fingerprint bit-for-bit
+	defFP, _ := Fingerprint("NoMethodError", []string{"app/models/order.rb:42:in `total'"}, nil)
+	onlyDefFP, _ := FingerprintWithCustom("NoMethodError", []string{"app/models/order.rb:42:in `total'"}, nil, []string{"{{ default }}"})
+	if defFP != onlyDefFP {
+		t.Fatalf("{{ default }} alone should equal defaultFP: %s vs %s", onlyDefFP, defFP)
+	}
+
+	// {{ default }} + discriminator splits same frame into distinct groups
+	subA, _ := FingerprintWithCustom("NoMethodError", []string{"app/models/order.rb:42:in `total'"}, nil, []string{"{{ default }}", "stripe"})
+	subB, _ := FingerprintWithCustom("NoMethodError", []string{"app/models/order.rb:42:in `total'"}, nil, []string{"{{ default }}", "paypal"})
+	if subA == subB || subA == defFP {
+		t.Fatalf("{{ default }} + discriminator failed to separate groups: def=%s a=%s b=%s", defFP, subA, subB)
+	}
+
+	// Delimiter collision safety: ["a|b", "c"] != ["a", "b|c"]
+	colA, _ := FingerprintWithCustom("Err", []string{"app/a.rb:1"}, nil, []string{"a|b", "c"})
+	colB, _ := FingerprintWithCustom("Err", []string{"app/a.rb:1"}, nil, []string{"a", "b|c"})
+	if colA == colB {
+		t.Fatal("delimiter collision between custom fingerprint parts")
+	}
+}
