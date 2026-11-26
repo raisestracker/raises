@@ -137,18 +137,22 @@ func randomID(prefix string, bytes int) (string, error) {
 
 func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 	columns := map[string]string{
-		"apps.slug":                       "ALTER TABLE apps ADD COLUMN slug TEXT NOT NULL DEFAULT ''",
-		"apps.project_id":                 "ALTER TABLE apps ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
-		"apps.display_name":               "ALTER TABLE apps ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
-		"apps.owner_user_id":              "ALTER TABLE apps ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
-		"apps.github_installation_id":     "ALTER TABLE apps ADD COLUMN github_installation_id INTEGER NOT NULL DEFAULT 0",
-		"apps.github_repository_id":       "ALTER TABLE apps ADD COLUMN github_repository_id INTEGER NOT NULL DEFAULT 0",
-		"apps.archived_at_unix":           "ALTER TABLE apps ADD COLUMN archived_at_unix INTEGER",
-		"apps.created_at_unix":            "ALTER TABLE apps ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0",
-		"apps.updated_at_unix":            "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
-		"error_groups.project_id":         "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
-		"error_groups.suppressed_at_unix": "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
-		"error_groups.resolved_at_unix":   "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
+		"apps.slug":                          "ALTER TABLE apps ADD COLUMN slug TEXT NOT NULL DEFAULT ''",
+		"apps.project_id":                    "ALTER TABLE apps ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+		"apps.display_name":                  "ALTER TABLE apps ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+		"apps.owner_user_id":                 "ALTER TABLE apps ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
+		"apps.github_installation_id":        "ALTER TABLE apps ADD COLUMN github_installation_id INTEGER NOT NULL DEFAULT 0",
+		"apps.github_repository_id":          "ALTER TABLE apps ADD COLUMN github_repository_id INTEGER NOT NULL DEFAULT 0",
+		"apps.archived_at_unix":              "ALTER TABLE apps ADD COLUMN archived_at_unix INTEGER",
+		"apps.created_at_unix":               "ALTER TABLE apps ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0",
+		"apps.updated_at_unix":               "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
+		"error_groups.project_id":            "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+		"error_groups.suppressed_at_unix":    "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
+		"error_groups.resolved_at_unix":      "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
+		"error_groups.claimed_by":            "ALTER TABLE error_groups ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''",
+		"error_groups.claimed_at_unix":       "ALTER TABLE error_groups ADD COLUMN claimed_at_unix INTEGER",
+		"error_groups.lease_expires_at_unix": "ALTER TABLE error_groups ADD COLUMN lease_expires_at_unix INTEGER",
+		"error_groups.claim_note":            "ALTER TABLE error_groups ADD COLUMN claim_note TEXT NOT NULL DEFAULT ''",
 	}
 	for key, statement := range columns {
 		parts := strings.SplitN(key, ".", 2)
@@ -340,7 +344,8 @@ func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
 	defer func() { _ = tx.Rollback() }()
 	columns := `id, project_id, app_name, env, fingerprint, class, location, message, count,
 		first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json`
+		acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json`
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE error_groups_new (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		project_id TEXT NOT NULL DEFAULT '',
@@ -359,6 +364,10 @@ func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
 		acked_at_unix INTEGER,
 		suppressed_at_unix INTEGER,
 		resolved_at_unix INTEGER,
+		claimed_by TEXT NOT NULL DEFAULT '',
+		claimed_at_unix INTEGER,
+		lease_expires_at_unix INTEGER,
+		claim_note TEXT NOT NULL DEFAULT '',
 		sample_json TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("stage tenant-scoped groups: %w", err)

@@ -11,7 +11,7 @@ import (
 // scoping. Keeping them out makes that a compile error; this test fails the
 // build if anyone re-adds one.
 func TestStoreInterfaceHasNoUnscopedReads(t *testing.T) {
-	banned := []string{"List", "Get", "Notices", "Ack", "Suppress", "Unsuppress", "Resolve", "Reopen"}
+	banned := []string{"List", "Get", "Notices", "Ack", "Suppress", "Unsuppress", "Resolve", "Reopen", "Claim", "Release"}
 	iface := reflect.TypeOf((*Store)(nil)).Elem()
 	for _, name := range banned {
 		if _, ok := iface.MethodByName(name); ok {
@@ -21,7 +21,7 @@ func TestStoreInterfaceHasNoUnscopedReads(t *testing.T) {
 	required := []string{
 		"ListForUser", "GetForUser", "NoticesForUser",
 		"AckForUser", "SuppressForUser", "UnsuppressForUser",
-		"ResolveForUser", "ReopenForUser",
+		"ResolveForUser", "ReopenForUser", "ClaimForUser", "ReleaseForUser",
 	}
 	for _, name := range required {
 		if _, ok := iface.MethodByName(name); !ok {

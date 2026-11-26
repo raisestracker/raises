@@ -59,8 +59,10 @@ type Store interface {
 	RevokeProjectToken(context.Context, int64, string, string) error
 	ListForUser(context.Context, int64, string, bool) ([]inbox.Group, error)
 	ListForUserCompact(context.Context, int64, string, bool, bool) ([]inbox.Group, error)
+	ListForUserWithOptions(context.Context, int64, string, bool, inbox.ListOptions) ([]inbox.Group, error)
 	ListPageForUser(context.Context, int64, string, string, int, int) (inbox.ErrorPage, error)
 	ListPageForUserCompact(context.Context, int64, string, string, int, int, bool) (inbox.ErrorPage, error)
+	ListPageForUserWithOptions(context.Context, int64, string, string, int, int, inbox.ListOptions) (inbox.ErrorPage, error)
 	DashboardForUser(context.Context, int64) (inbox.DashboardStats, error)
 	ProjectBySlug(context.Context, int64, string) (inbox.Project, error)
 	ProjectCounts(context.Context, string) (int, int, int, error)
@@ -74,6 +76,8 @@ type Store interface {
 	UnsuppressForUser(context.Context, int64, int64) (inbox.Group, error)
 	ResolveForUser(context.Context, int64, int64) (inbox.Group, error)
 	ReopenForUser(context.Context, int64, int64) (inbox.Group, error)
+	ClaimForUser(context.Context, int64, int64, string, string, time.Duration) (inbox.Group, error)
+	ReleaseForUser(context.Context, int64, int64, string) (inbox.Group, error)
 	UpsertInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
 	ListInstallations(context.Context, int64) ([]inbox.GitHubInstallation, error)
 	InstallationUserID(context.Context, int64) (int64, error)
@@ -216,6 +220,8 @@ func NewWithConfig(store Store, logger *slog.Logger, bodyLimit int64, config Con
 	mux.HandleFunc("POST /v1/errors/{id}/ack", s.ackError)
 	mux.HandleFunc("POST /v1/errors/{id}/resolve", s.resolveError)
 	mux.HandleFunc("POST /v1/errors/{id}/reopen", s.reopenError)
+	mux.HandleFunc("POST /v1/errors/{id}/claim", s.claimError)
+	mux.HandleFunc("POST /v1/errors/{id}/release", s.releaseError)
 	mux.HandleFunc("POST /v1/errors/{id}/suppress", s.suppressError)
 	mux.HandleFunc("POST /v1/errors/{id}/unsuppress", s.unsuppressError)
 	mux.HandleFunc("POST /v1/bootstrap/exchange", s.exchangeBootstrap)
@@ -636,21 +642,22 @@ func (s *Server) populateGroupURLs(groups []inbox.Group) {
 }
 
 type compactGroup struct {
-	ID                int64      `json:"id"`
-	App               string     `json:"app"`
-	Env               string     `json:"env"`
-	Class             string     `json:"class"`
-	Location          string     `json:"location"`
-	Message           string     `json:"message"`
-	Count             int        `json:"count"`
-	LastSeen          time.Time  `json:"last_seen"`
-	GitHubIssueNumber int        `json:"github_issue_number,omitempty"`
-	GitHubIssueURL    string     `json:"github_issue_url,omitempty"`
-	URL               string     `json:"url,omitempty"`
-	AckedAt           *time.Time `json:"acked_at,omitempty"`
-	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
-	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
-	Status            string     `json:"status"`
+	ID                int64        `json:"id"`
+	App               string       `json:"app"`
+	Env               string       `json:"env"`
+	Class             string       `json:"class"`
+	Location          string       `json:"location"`
+	Message           string       `json:"message"`
+	Count             int          `json:"count"`
+	LastSeen          time.Time    `json:"last_seen"`
+	GitHubIssueNumber int          `json:"github_issue_number,omitempty"`
+	GitHubIssueURL    string       `json:"github_issue_url,omitempty"`
+	URL               string       `json:"url,omitempty"`
+	AckedAt           *time.Time   `json:"acked_at,omitempty"`
+	SuppressedAt      *time.Time   `json:"suppressed_at,omitempty"`
+	ResolvedAt        *time.Time   `json:"resolved_at,omitempty"`
+	Claim             *inbox.Claim `json:"claim,omitempty"`
+	Status            string       `json:"status"`
 }
 
 type compactErrorPage struct {
@@ -683,6 +690,7 @@ func toCompactGroups(groups []inbox.Group) []compactGroup {
 			AckedAt:           g.AckedAt,
 			SuppressedAt:      g.SuppressedAt,
 			ResolvedAt:        g.ResolvedAt,
+			Claim:             g.Claim,
 			Status:            g.Status,
 		}
 	}
@@ -696,6 +704,8 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	compact := query.Get("compact") == "1" || query.Get("compact") == "true"
+	excludeClaimed := query.Get("exclude_claimed") == "1" || query.Get("exclude_claimed") == "true"
+	opts := inbox.ListOptions{Compact: compact, ExcludeClaimed: excludeClaimed}
 	if query.Has("status") || query.Has("page") || query.Has("per_page") {
 		status := inbox.NormalizeStatus(query.Get("status"), inbox.StatusAll)
 		if raw := query.Get("status"); raw != "" && status == inbox.StatusAll && !strings.EqualFold(raw, "all") {
@@ -704,7 +714,7 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 		}
 		page, _ := strconv.Atoi(query.Get("page"))
 		perPage, _ := strconv.Atoi(query.Get("per_page"))
-		result, err := s.store.ListPageForUserCompact(r.Context(), userID, query.Get("app"), status, page, perPage, compact)
+		result, err := s.store.ListPageForUserWithOptions(r.Context(), userID, query.Get("app"), status, page, perPage, opts)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list errors"})
 			return
@@ -724,7 +734,7 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	unacked := query.Get("unacked") == "1" || query.Get("unacked") == "true"
-	groups, err := s.store.ListForUserCompact(r.Context(), userID, query.Get("app"), unacked, compact)
+	groups, err := s.store.ListForUserWithOptions(r.Context(), userID, query.Get("app"), unacked, opts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list errors"})
 		return
@@ -1028,6 +1038,113 @@ func (s *Server) reopenError(w http.ResponseWriter, r *http.Request) {
 	}
 	s.populateGroupURL(&group)
 	writeJSON(w, http.StatusOK, group)
+}
+
+type claimRequest struct {
+	Agent      string `json:"agent"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	Note       string `json:"note"`
+}
+
+func (s *Server) claimError(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.agentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req claimRequest
+	if r.Body != nil {
+		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 8192))
+		if readErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read request body"})
+			return
+		}
+		if len(bytesTrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+				return
+			}
+		}
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	group, err := s.store.ClaimForUser(r.Context(), userID, id, req.Agent, req.Note, ttl)
+	if errors.Is(err, inbox.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if errors.Is(err, inbox.ErrInvalidClaim) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, inbox.ErrClaimConflict) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "already claimed",
+			"claim": group.Claim,
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not claim error"})
+		return
+	}
+	s.populateGroupURL(&group)
+	writeJSON(w, http.StatusOK, group)
+}
+
+type releaseRequest struct {
+	Agent string `json:"agent"`
+}
+
+func (s *Server) releaseError(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.agentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req releaseRequest
+	if r.Body != nil {
+		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+		if readErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read request body"})
+			return
+		}
+		if len(bytesTrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+				return
+			}
+		}
+	}
+	group, err := s.store.ReleaseForUser(r.Context(), userID, id, req.Agent)
+	if errors.Is(err, inbox.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if errors.Is(err, inbox.ErrClaimConflict) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "claimed by another agent",
+			"claim": group.Claim,
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not release error"})
+		return
+	}
+	s.populateGroupURL(&group)
+	writeJSON(w, http.StatusOK, group)
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
 }
 
 func (s *Server) agentUser(w http.ResponseWriter, r *http.Request) (int64, bool) {

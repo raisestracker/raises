@@ -18,11 +18,18 @@ import (
 const (
 	defaultKeepNotices      = 50
 	lastUsedDebounceSeconds = 60
+
+	DefaultClaimTTL  = 15 * time.Minute
+	MaxClaimTTL      = 2 * time.Hour
+	maxClaimAgentLen = 80
+	maxClaimNoteLen  = 256
 )
 
 var ErrUnauthorized = errors.New("unauthorized")
 var ErrNotFound = errors.New("not found")
 var ErrLimit = errors.New("limit reached")
+var ErrClaimConflict = errors.New("error group is already claimed")
+var ErrInvalidClaim = errors.New("invalid claim")
 
 type App struct {
 	ID                   string
@@ -51,6 +58,18 @@ type Notice struct {
 	ReceivedAt  time.Time      `json:"received_at"`
 }
 
+type Claim struct {
+	Agent     string    `json:"agent"`
+	ClaimedAt time.Time `json:"claimed_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Note      string    `json:"note,omitempty"`
+}
+
+type ListOptions struct {
+	Compact        bool
+	ExcludeClaimed bool
+}
+
 type Group struct {
 	ID                int64      `json:"id"`
 	ProjectID         string     `json:"project_id"`
@@ -70,6 +89,7 @@ type Group struct {
 	AckedAt           *time.Time `json:"acked_at,omitempty"`
 	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
 	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	Claim             *Claim     `json:"claim,omitempty"`
 	Status            string     `json:"status"`
 	Sample            Notice     `json:"sample,omitzero"`
 }
@@ -214,6 +234,10 @@ func (s *Store) initialize(ctx context.Context) error {
 			acked_at_unix INTEGER,
 			suppressed_at_unix INTEGER,
 			resolved_at_unix INTEGER,
+			claimed_by TEXT NOT NULL DEFAULT '',
+			claimed_at_unix INTEGER,
+			lease_expires_at_unix INTEGER,
+			claim_note TEXT NOT NULL DEFAULT '',
 			sample_json TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS notices (
@@ -537,7 +561,8 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 	query := `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		       claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json
 		FROM error_groups
 	`
 	args := []any{}
@@ -558,9 +583,10 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 		return nil, err
 	}
 	defer rows.Close()
+	now := s.now().UTC()
 	var groups []Group
 	for rows.Next() {
-		group, err := scanGroup(rows)
+		group, err := scanGroup(rows, now)
 		if err != nil {
 			return nil, err
 		}
@@ -578,10 +604,11 @@ func (s *Store) Get(ctx context.Context, id int64) (Group, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		       claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json
 		FROM error_groups WHERE id = ?
 	`, id)
-	group, err := scanGroup(row)
+	group, err := scanGroup(row, s.now().UTC())
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, ErrNotFound
 	}
@@ -625,7 +652,11 @@ func (s *Store) Notices(ctx context.Context, id int64, limit int) ([]Notice, err
 // httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET acked_at_unix = ? WHERE id = ?`, now, id)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET acked_at_unix = ?, claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
+		WHERE id = ?
+	`, now, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -641,7 +672,11 @@ func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 // httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Suppress(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET suppressed_at_unix = ? WHERE id = ?`, now, id)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET suppressed_at_unix = ?, claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
+		WHERE id = ?
+	`, now, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -674,7 +709,8 @@ func (s *Store) Resolve(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE error_groups
-		SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
+		SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?),
+		    claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
 		WHERE id = ?
 	`, now, now, id)
 	if err != nil {
@@ -710,18 +746,39 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanGroup(row rowScanner) (Group, error) {
+func buildActiveClaim(now time.Time, claimedBy string, claimedAtUnix, leaseExpiresUnix sql.NullInt64, claimNote string) *Claim {
+	if !leaseExpiresUnix.Valid || leaseExpiresUnix.Int64 <= now.Unix() || claimedBy == "" {
+		return nil
+	}
+	var claimedAt time.Time
+	if claimedAtUnix.Valid {
+		claimedAt = time.Unix(claimedAtUnix.Int64, 0).UTC()
+	}
+	return &Claim{
+		Agent:     claimedBy,
+		ClaimedAt: claimedAt,
+		ExpiresAt: time.Unix(leaseExpiresUnix.Int64, 0).UTC(),
+		Note:      claimNote,
+	}
+}
+
+func scanGroup(row rowScanner, now time.Time) (Group, error) {
 	var (
-		group          Group
-		ackedUnix      sql.NullInt64
-		suppressedUnix sql.NullInt64
-		resolvedUnix   sql.NullInt64
-		sampleRaw      string
+		group            Group
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		claimedBy        string
+		claimedAtUnix    sql.NullInt64
+		leaseExpiresUnix sql.NullInt64
+		claimNote        string
+		sampleRaw        string
 	)
 	err := row.Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
-		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
+		&ackedUnix, &suppressedUnix, &resolvedUnix,
+		&claimedBy, &claimedAtUnix, &leaseExpiresUnix, &claimNote, &sampleRaw,
 	)
 	if err != nil {
 		return Group{}, err
@@ -739,21 +796,27 @@ func scanGroup(row rowScanner) (Group, error) {
 		t := time.Unix(resolvedUnix.Int64, 0).UTC()
 		group.ResolvedAt = &t
 	}
+	group.Claim = buildActiveClaim(now, claimedBy, claimedAtUnix, leaseExpiresUnix, claimNote)
 	group.Status = group.ComputeStatus()
 	return group, nil
 }
 
-func scanGroupCompact(row rowScanner) (Group, error) {
+func scanGroupCompact(row rowScanner, now time.Time) (Group, error) {
 	var (
-		group          Group
-		ackedUnix      sql.NullInt64
-		suppressedUnix sql.NullInt64
-		resolvedUnix   sql.NullInt64
+		group            Group
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		claimedBy        string
+		claimedAtUnix    sql.NullInt64
+		leaseExpiresUnix sql.NullInt64
+		claimNote        string
 	)
 	err := row.Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
 		&ackedUnix, &suppressedUnix, &resolvedUnix,
+		&claimedBy, &claimedAtUnix, &leaseExpiresUnix, &claimNote,
 	)
 	if err != nil {
 		return Group{}, err
@@ -770,6 +833,7 @@ func scanGroupCompact(row rowScanner) (Group, error) {
 		t := time.Unix(resolvedUnix.Int64, 0).UTC()
 		group.ResolvedAt = &t
 	}
+	group.Claim = buildActiveClaim(now, claimedBy, claimedAtUnix, leaseExpiresUnix, claimNote)
 	group.Status = group.ComputeStatus()
 	return group, nil
 }

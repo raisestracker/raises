@@ -73,18 +73,25 @@ type ErrorPage struct {
 // ListPageForUser returns one page of a user's errors, newest activity first.
 // project may be a project id or slug; empty means all projects.
 func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, status string, page, pageSize int) (ErrorPage, error) {
-	return s.ListPageForUserCompact(ctx, userID, project, status, page, pageSize, false)
+	return s.ListPageForUserWithOptions(ctx, userID, project, status, page, pageSize, ListOptions{})
 }
 
 // ListPageForUserCompact returns one page of a user's errors; when compact is
 // true, sample_json is omitted from the SQL projection and JSON serialization.
 func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, project, status string, page, pageSize int, compact bool) (ErrorPage, error) {
+	return s.ListPageForUserWithOptions(ctx, userID, project, status, page, pageSize, ListOptions{Compact: compact})
+}
+
+// ListPageForUserWithOptions returns one page of a user's errors with optional
+// compact projection and active-claim exclusion.
+func (s *Store) ListPageForUserWithOptions(ctx context.Context, userID int64, project, status string, page, pageSize int, opts ListOptions) (ErrorPage, error) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = DefaultPageSize
 	}
 	if page < 1 {
 		page = 1
 	}
+	now := s.now().UTC()
 	where := ` WHERE a.owner_user_id = ?`
 	args := []any{userID}
 	if project != "" {
@@ -93,6 +100,10 @@ func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, projec
 	}
 	if clause := statusClause(status, "g."); clause != "" {
 		where += ` AND ` + clause
+	}
+	if opts.ExcludeClaimed {
+		where += ` AND (g.lease_expires_at_unix IS NULL OR g.lease_expires_at_unix <= ?)`
+		args = append(args, now.Unix())
 	}
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where, args...).Scan(&total); err != nil {
@@ -107,11 +118,13 @@ func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, projec
 	}
 	cols := `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json`
-	if compact {
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix,
+		       g.claimed_by, g.claimed_at_unix, g.lease_expires_at_unix, g.claim_note, g.sample_json`
+	if opts.Compact {
 		cols = `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix`
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix,
+		       g.claimed_by, g.claimed_at_unix, g.lease_expires_at_unix, g.claim_note`
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+cols+`
@@ -128,10 +141,10 @@ func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, projec
 			group Group
 			err   error
 		)
-		if compact {
-			group, err = scanGroupCompact(rows)
+		if opts.Compact {
+			group, err = scanGroupCompact(rows, now)
 		} else {
-			group, err = scanGroup(rows)
+			group, err = scanGroup(rows, now)
 		}
 		if err != nil {
 			return ErrorPage{}, err
@@ -162,7 +175,8 @@ func (s *Store) setResolvedByIssue(ctx context.Context, repositoryID, installati
 		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
 	args := []any{number, repositoryID, installationID}
 	if resolved {
-		query = `UPDATE error_groups SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
+		query = `UPDATE error_groups SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?),
+		claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
 		WHERE github_issue_number = ? AND resolved_at_unix IS NULL
 		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
 		args = []any{now, now, number, repositoryID, installationID}
