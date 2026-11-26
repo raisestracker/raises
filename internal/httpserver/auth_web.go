@@ -213,18 +213,19 @@ func (s *Server) finishInstallation(r *http.Request, userToken string, userID in
 }
 
 func (s *Server) syncInstallation(r *http.Request, userID, installationID int64, userToken string) error {
+	if userToken == "" {
+		// User-initiated links always carry the linker's token, scoped to
+		// what they can read. Webhook resyncs must use refreshInstallation
+		// instead: persisting the app-token full list here would activate
+		// every installation repo under the linker.
+		return fmt.Errorf("syncInstallation requires a user token")
+	}
 	installation, err := s.config.GitHubApp.Installation(r.Context(), installationID)
 	if err != nil {
 		return err
 	}
-	var repos []github.Repository
-	if userToken != "" {
-		// User-initiated link: list only repos the linker can read.
-		repos, err = s.config.GitHubApp.UserInstallationRepositories(r.Context(), userToken, installationID)
-	} else {
-		// Webhook resync has no user token; refresh names from the full list.
-		repos, err = s.config.GitHubApp.Repositories(r.Context(), installationID)
-	}
+	// User-initiated link: list only repos the linker can read.
+	repos, err := s.config.GitHubApp.UserInstallationRepositories(r.Context(), userToken, installationID)
 	if err != nil {
 		return err
 	}
@@ -237,6 +238,32 @@ func (s *Server) syncInstallation(r *http.Request, userID, installationID int64,
 		status = "suspended"
 	}
 	return s.store.UpsertInstallation(r.Context(), userID, installationID, installation.Account.Login, installation.TargetType, installation.RepositorySelection, status, mapped)
+}
+
+// refreshInstallation applies an app-token webhook resync to an already
+// linked installation. It never adds or activates repositories: repos the
+// resync lists but the linker never linked stay invisible and unbindable;
+// only a user-token relink (syncInstallation) makes new repos bindable.
+// Present repos get a full_name refresh; repos missing from the resync are
+// deactivated.
+func (s *Server) refreshInstallation(r *http.Request, userID, installationID int64) error {
+	installation, err := s.config.GitHubApp.Installation(r.Context(), installationID)
+	if err != nil {
+		return err
+	}
+	repos, err := s.config.GitHubApp.Repositories(r.Context(), installationID)
+	if err != nil {
+		return err
+	}
+	mapped := make([]inbox.GitHubRepository, 0, len(repos))
+	for _, repo := range repos {
+		mapped = append(mapped, inbox.GitHubRepository{ID: repo.ID, InstallationID: installationID, FullName: repo.FullName})
+	}
+	status := "active"
+	if installation.SuspendedAt != nil {
+		status = "suspended"
+	}
+	return s.store.RefreshInstallation(r.Context(), userID, installationID, installation.Account.Login, installation.TargetType, installation.RepositorySelection, status, mapped)
 }
 
 // githubSetup receives GitHub's post-install redirect. GET renders a
@@ -686,7 +713,10 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetInstallationStatus(r.Context(), payload.Installation.ID, status)
 	} else if event == "installation" || event == "installation_repositories" {
 		if userID, err := s.store.InstallationUserID(r.Context(), payload.Installation.ID); err == nil {
-			_ = s.syncInstallation(r, userID, payload.Installation.ID, "")
+			// App-token resync: refresh names and deactivate missing repos,
+			// never add or activate. New repos become bindable only through
+			// a user-token relink.
+			_ = s.refreshInstallation(r, userID, payload.Installation.ID)
 		}
 	}
 	w.WriteHeader(http.StatusAccepted)

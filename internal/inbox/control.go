@@ -1225,6 +1225,82 @@ func (s *Store) UpsertInstallation(ctx context.Context, userID int64, installati
 	return tx.Commit()
 }
 
+// RefreshInstallation applies an app-token webhook resync to an already
+// linked installation. It must never add or activate repositories: only the
+// link step (UpsertInstallation, driven by a user token scoped to what the
+// linker can read) makes repos bindable. Refresh updates the installation
+// metadata, renames repos that are still present, and deactivates repos
+// missing from the resync. Rows that are already inactive stay inactive even
+// when the resync lists them; they become bindable only through a user-token
+// relink.
+func (s *Store) RefreshInstallation(ctx context.Context, userID int64, installationID int64, account, targetType, selection, status string, repos []GitHubRepository) error {
+	var existing int64
+	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM github_installations WHERE installation_id=?`, installationID).Scan(&existing)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if existing != userID {
+		return ErrInstallationTaken
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := s.now().UTC().Unix()
+	_, err = tx.ExecContext(ctx, `UPDATE github_installations SET account_login=?,target_type=?,repository_selection=?,status=?,updated_at_unix=? WHERE installation_id=?`, account, targetType, selection, status, now, installationID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[int64]string, len(repos))
+	for _, repo := range repos {
+		seen[repo.ID] = repo.FullName
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT repository_id,full_name FROM github_repositories WHERE installation_id=? AND active=1`, installationID)
+	if err != nil {
+		return err
+	}
+	type activeRepo struct {
+		id   int64
+		name string
+	}
+	var active []activeRepo
+	for rows.Next() {
+		var r activeRepo
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		active = append(active, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, r := range active {
+		name, ok := seen[r.id]
+		if !ok {
+			if _, err = tx.ExecContext(ctx, `UPDATE github_repositories SET active=0,updated_at_unix=? WHERE repository_id=?`, now, r.id); err != nil {
+				return err
+			}
+			continue
+		}
+		if name != r.name {
+			if _, err = tx.ExecContext(ctx, `UPDATE github_repositories SET full_name=?,updated_at_unix=? WHERE repository_id=?`, name, now, r.id); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE apps SET github_repo=?,github_installation_id=?,updated_at_unix=? WHERE github_repository_id=?`, name, installationID, now, r.id); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListInstallations(ctx context.Context, userID int64) ([]GitHubInstallation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT installation_id,account_login,target_type,repository_selection,status,updated_at_unix FROM github_installations WHERE user_id=? ORDER BY account_login`, userID)
 	if err != nil {

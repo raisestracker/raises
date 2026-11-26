@@ -83,6 +83,7 @@ type Store interface {
 	ClaimForUser(context.Context, int64, int64, string, string, time.Duration) (inbox.Group, error)
 	ReleaseForUser(context.Context, int64, int64, string) (inbox.Group, error)
 	UpsertInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
+	RefreshInstallation(context.Context, int64, int64, string, string, string, string, []inbox.GitHubRepository) error
 	ListInstallations(context.Context, int64) ([]inbox.GitHubInstallation, error)
 	InstallationUserID(context.Context, int64) (int64, error)
 	SetInstallationStatus(context.Context, int64, string) error
