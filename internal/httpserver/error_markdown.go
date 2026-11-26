@@ -93,8 +93,8 @@ func RenderRemediationMarkdown(rc inbox.RemediationContext) string {
 			metaLines = append(metaLines, "claim_note: "+sanitizeSingleLine(rc.Group.Claim.Note, 160))
 		}
 	}
-	writeFencedSection(&b, "## Summary", "text", strings.Join(metaLines, "\n"))
-	writeFencedSection(&b, "## Message", "text", truncateRunes(rc.Group.Message, maxMarkdownFieldRunes))
+	appendSectionIfFits(&b, "## Summary", "text", strings.Join(metaLines, "\n"), maxMarkdownBytes)
+	appendSectionIfFits(&b, "## Message", "text", truncateRunes(rc.Group.Message, maxMarkdownFieldRunes), maxMarkdownBytes)
 
 	// Stacktrace section: prioritize in-app frames.
 	var traceLines []string
@@ -172,10 +172,6 @@ func formatFencedSection(heading, lang, content string) string {
 	return fmt.Sprintf("%s\n\n%s%s\n%s\n%s\n\n", heading, fence, lang, normalized, fence)
 }
 
-func writeFencedSection(b *strings.Builder, heading, lang, content string) {
-	b.WriteString(formatFencedSection(heading, lang, content))
-}
-
 func appendSectionIfFits(b *strings.Builder, heading, lang, content string, budget int) {
 	sec := formatFencedSection(heading, lang, content)
 	if b.Len()+len(sec) <= budget {
@@ -183,7 +179,8 @@ func appendSectionIfFits(b *strings.Builder, heading, lang, content string, budg
 		return
 	}
 	// Shrink content to fit inside remaining budget while preserving balanced fences.
-	overhead := len(heading) + len(lang) + 32
+	fence := inbox.FenceFor(content)
+	overhead := len(heading) + len(lang) + 2*len(fence) + 16
 	avail := budget - b.Len() - overhead
 	if avail < 64 {
 		return

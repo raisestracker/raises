@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const MaxSentryEnvelopeEvents = 10
@@ -106,7 +108,7 @@ func ParseSentryEnvelope(raw []byte) (string, []Notice, error) {
 		var payload []byte
 		if itemHeader.Length != nil {
 			n := *itemHeader.Length
-			if n < 0 || pos+n > len(raw) {
+			if n < 0 || n > len(raw)-pos {
 				return "", nil, fmt.Errorf("%w: truncated item payload", ErrInvalidSentryEnvelope)
 			}
 			payload = raw[pos : pos+n]
@@ -191,8 +193,14 @@ func sentryEventToNotice(payload []byte, envHeader sentryEnvelopeHeader) (Notice
 		}
 	}
 	if className == "" {
-		if ev.Level != "" {
-			className = strings.ToUpper(ev.Level[:1]) + ev.Level[1:]
+		lvl := strings.TrimSpace(ev.Level)
+		if lvl != "" {
+			r, size := utf8.DecodeRuneInString(lvl)
+			if r != utf8.RuneError || size > 1 {
+				className = string(unicode.ToUpper(r)) + lvl[size:]
+			} else {
+				className = "Error"
+			}
 		} else {
 			className = "Error"
 		}

@@ -181,10 +181,11 @@ func (s *Server) bindGitHubRepository(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RepositoryID int64 `json:"repository_id"`
 	}
-	if !decodeJSON(w, r, &req) || req.RepositoryID < 1 {
-		if req.RepositoryID < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repository_id is required"})
-		}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.RepositoryID < 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repository_id is required"})
 		return
 	}
 	project, err := s.store.BindProjectRepository(r.Context(), userID, r.PathValue("id"), req.RepositoryID)

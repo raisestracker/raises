@@ -1319,7 +1319,16 @@ func (s *Server) claimError(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	ttl := time.Duration(req.TTLSeconds) * time.Second
+	var ttl time.Duration
+	maxTTLSeconds := int(inbox.MaxClaimTTL / time.Second)
+	switch {
+	case req.TTLSeconds < 0:
+		ttl = -time.Second
+	case req.TTLSeconds > maxTTLSeconds:
+		ttl = inbox.MaxClaimTTL
+	default:
+		ttl = time.Duration(req.TTLSeconds) * time.Second
+	}
 	group, err := s.store.ClaimForUser(r.Context(), userID, id, req.Agent, req.Note, ttl)
 	if errors.Is(err, inbox.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
