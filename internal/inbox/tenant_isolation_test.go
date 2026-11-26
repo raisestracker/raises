@@ -162,8 +162,15 @@ func TestCollisionDoesNotMutateOtherTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filer.opened != 1 || first.Group.GitHubIssueNumber == 0 {
-		t.Fatalf("victim issue was not filed: opened=%d group=%#v", filer.opened, first.Group)
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	firstLoaded, err := store.Get(ctx, first.Group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filer.opened != 1 || firstLoaded.GitHubIssueNumber == 0 {
+		t.Fatalf("victim issue was not filed: opened=%d group=%#v", filer.opened, firstLoaded)
 	}
 	if _, err := store.AckForUser(ctx, ownerA.ID, first.Group.ID); err != nil {
 		t.Fatal(err)

@@ -462,13 +462,7 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		return IngestResult{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return IngestResult{}, err
-	}
-	if (created || regressed) && !suppressed {
-		s.wakeOutbound()
-	}
-
+	issueJobEnqueued := false
 	if s.filer != nil && app.GitHubRepo != "" && app.GitHubInstallationID != 0 && !suppressed {
 		action := ""
 		if created {
@@ -477,12 +471,22 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 			action = "reopen"
 		}
 		if action != "" {
-			_ = s.enqueueIssueJob(ctx, group.ID, action)
-			_ = s.ProcessIssueJobsOnce(ctx)
-			if refreshed, refreshErr := s.Get(ctx, group.ID); refreshErr == nil {
-				group = refreshed
+			enqueued, err := s.enqueueIssueJobTx(ctx, tx, group.ID, action)
+			if err != nil {
+				return IngestResult{}, err
 			}
+			issueJobEnqueued = enqueued
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return IngestResult{}, err
+	}
+	if (created || regressed) && !suppressed {
+		s.wakeOutbound()
+	}
+	if issueJobEnqueued {
+		s.wakeIssues()
 	}
 
 	group.Status = group.ComputeStatus()

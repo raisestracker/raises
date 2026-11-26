@@ -883,7 +883,7 @@ func TestSettingsShowsDeadDeliveryAndOwnerCanRetry(t *testing.T) {
 	if _, err := store.Ingest(ctx, "token", inbox.Notice{Class: "RuntimeError", Backtrace: []string{"app/jobs/x.rb:1"}}); err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 1; attempt < 20; attempt++ {
+	for attempt := 0; attempt < 20; attempt++ {
 		now = now.Add(20 * time.Minute)
 		if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 			t.Fatal(err)

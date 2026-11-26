@@ -105,6 +105,9 @@ func TestUnsuppressRestoresFutureBehaviorOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Ack(ctx, first.Group.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +130,9 @@ func TestUnsuppressRestoresFutureBehaviorOnly(t *testing.T) {
 	n.Revision = "ccc"
 	result, err := store.Ingest(ctx, "app-token", n)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if !result.Regressed || filer.reopened != 1 {
@@ -173,10 +179,16 @@ func TestSuppressedNewGroupStillOpensIssueOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Suppress(ctx, result.Group.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Ingest(ctx, "app-token", Notice{Class: "RuntimeError", Backtrace: []string{"app/jobs/x.rb:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if filer.opened != 1 || filer.reopened != 0 {

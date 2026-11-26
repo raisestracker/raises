@@ -71,8 +71,14 @@ func TestIssueFailureIsQueuedWithoutRejectingNotice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ingest should survive github failure: %v", err)
 	}
-	if result.Group.GitHubIssueNumber != 0 {
-		t.Fatalf("unexpected issue=%d", result.Group.GitHubIssueNumber)
+	if result.Group.GitHubIssueNumber != 0 || filer.opened != 0 {
+		t.Fatalf("ingest should enqueue asynchronously without calling filer: issue=%d opened=%d", result.Group.GitHubIssueNumber, filer.opened)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if filer.opened != 1 {
+		t.Fatalf("expected failed first attempt, opened=%d", filer.opened)
 	}
 	filer.fail = false
 	now = now.Add(3 * time.Second)
@@ -104,8 +110,14 @@ func TestAmbiguousIssueCreateIsReconciledWithoutDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Group.GitHubIssueNumber != 0 || filer.opened != 1 {
-		t.Fatalf("first issue=%d opened=%d", result.Group.GitHubIssueNumber, filer.opened)
+	if result.Group.GitHubIssueNumber != 0 || filer.opened != 0 {
+		t.Fatalf("ingest should be async: issue=%d opened=%d", result.Group.GitHubIssueNumber, filer.opened)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if filer.opened != 1 {
+		t.Fatalf("first attempt opened=%d", filer.opened)
 	}
 	now = now.Add(3 * time.Second)
 	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
@@ -133,6 +145,9 @@ func TestIssueJobEmitsGitHubLifecycleWithoutDuplicatingIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.Ingest(ctx, "token", Notice{Class: "RuntimeError", Backtrace: []string{"app/jobs/x.rb:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if filer.opened != 1 {
@@ -181,7 +196,7 @@ func TestIssueJobLeaseRecoveryAndDeadLetterRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 1; attempt < maxIssueJobAttempts; attempt++ {
+	for attempt := 0; attempt < maxIssueJobAttempts; attempt++ {
 		now = now.Add(20 * time.Minute)
 		if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 			t.Fatal(err)
@@ -246,13 +261,22 @@ func TestIngestGroupsAndOpensIssueOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Created || filer.opened != 1 {
-		t.Fatalf("first ingest created=%v opened=%d", first.Created, filer.opened)
+	if !first.Created || filer.opened != 0 {
+		t.Fatalf("first ingest created=%v opened=%d (expected async)", first.Created, filer.opened)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if filer.opened != 1 {
+		t.Fatalf("after worker pass opened=%d", filer.opened)
 	}
 
 	n.Message = "undefined method foo for nil (id 99)"
 	second, err := store.Ingest(ctx, "app-token", n)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if second.Created || second.Group.Count != 2 || filer.opened != 1 {
@@ -277,6 +301,9 @@ func TestRegressionReopensAfterAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Ack(ctx, first.Group.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +312,14 @@ func TestRegressionReopensAfterAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Regressed || filer.reopened != 1 {
-		t.Fatalf("regressed=%v reopened=%d", result.Regressed, filer.reopened)
+	if !result.Regressed || filer.reopened != 0 {
+		t.Fatalf("regressed=%v reopened=%d (expected async)", result.Regressed, filer.reopened)
+	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if filer.reopened != 1 {
+		t.Fatalf("after worker pass reopened=%d", filer.reopened)
 	}
 	if result.Group.AckedAt != nil {
 		t.Fatal("ack should clear on regression")
@@ -310,6 +343,9 @@ func TestSameRevisionAfterAckDoesNotReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Ack(ctx, first.Group.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -317,9 +353,83 @@ func TestSameRevisionAfterAckDoesNotReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ProcessIssueJobsOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if result.Regressed || filer.reopened != 0 {
 		t.Fatalf("should not reopen same revision: %#v reopened=%d", result, filer.reopened)
 	}
+}
+
+type slowFiler struct {
+	delay time.Duration
+	inner fakeFiler
+}
+
+func (f *slowFiler) FindByMarker(ctx context.Context, installationID int64, repo, marker string, since time.Time) (int, string, bool, error) {
+	time.Sleep(f.delay)
+	return f.inner.FindByMarker(ctx, installationID, repo, marker, since)
+}
+
+func (f *slowFiler) Open(ctx context.Context, installationID int64, repo, title, body string) (int, string, error) {
+	time.Sleep(f.delay)
+	return f.inner.Open(ctx, installationID, repo, title, body)
+}
+
+func (f *slowFiler) Reopen(ctx context.Context, installationID int64, repo string, number int) error {
+	time.Sleep(f.delay)
+	return f.inner.Reopen(ctx, installationID, repo, number)
+}
+
+func TestIngestDecoupledFromSlowFiler(t *testing.T) {
+	ctx := context.Background()
+	filer := &slowFiler{delay: 150 * time.Millisecond}
+	store, err := Open(filepath.Join(t.TempDir(), "async.db"), nil, filer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertApp(ctx, "widget", "tok", "example/widget"); err != nil {
+		t.Fatal(err)
+	}
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.RunIssueWorker(workerCtx, nil)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	start := time.Now()
+	res, err := store.Ingest(ctx, "tok", Notice{
+		Class:     "TimeoutError",
+		Message:   "slow gh test",
+		Backtrace: []string{"app/models/slow.rb:1"},
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("Ingest blocked on slow filer: %s", elapsed)
+	}
+	if res.Group.GitHubIssueNumber != 0 {
+		t.Fatalf("expected async issue filing, got issue=%d", res.Group.GitHubIssueNumber)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		g, err := store.Get(ctx, res.Group.ID)
+		if err == nil && g.GitHubIssueNumber == 1 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("async issue worker did not deliver GitHub issue in time")
 }
 
 func TestBadToken(t *testing.T) {
