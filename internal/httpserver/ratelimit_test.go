@@ -319,3 +319,51 @@ func TestAllowRequestMapStaysCapped(t *testing.T) {
 		t.Fatalf("map size %d exceeds cap %d", size, rateLimitMaxEntries)
 	}
 }
+
+// One IP flooding POST /v1/bootstrap/exchange with invalid tokens is throttled
+// at failedAuthPerIPLimit without blocking a legitimate bootstrap from another IP.
+func TestBootstrapExchangeInvalidFloodIsThrottled(t *testing.T) {
+	s, _ := newRateLimitServer(t)
+	owner, err := s.store.UpsertGitHubUser(context.Background(), 4243, "boot-owner", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validToken, err := s.store.CreateBootstrapToken(context.Background(), owner.ID, "legit-agent", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	postBootstrap := func(token, forwardedFor string) int {
+		body := fmt.Sprintf(`{"token":%q,"name":"agent"}`, token)
+		req := httptest.NewRequest(http.MethodPost, "/v1/bootstrap/exchange", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	throttledAt := 0
+	for i := 1; i <= failedAuthPerIPLimit+5; i++ {
+		code := postBootstrap(fmt.Sprintf("boot-invalid-%d", i), "198.51.100.42")
+		if code == http.StatusTooManyRequests {
+			throttledAt = i
+			break
+		}
+		if code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status=%d, want 401 or 429", i, code)
+		}
+	}
+	if throttledAt == 0 || throttledAt > failedAuthPerIPLimit+1 {
+		t.Fatalf("bootstrap flood not throttled at expected limit: throttledAt=%d, limit=%d", throttledAt, failedAuthPerIPLimit)
+	}
+
+	// Legitimate bootstrap from another IP still succeeds with 201 and replay fails with 401.
+	if code := postBootstrap(validToken, "198.51.100.99"); code != http.StatusCreated {
+		t.Fatalf("valid bootstrap from other IP: status=%d, want 201", code)
+	}
+	if code := postBootstrap(validToken, "198.51.100.99"); code != http.StatusUnauthorized {
+		t.Fatalf("replayed bootstrap: status=%d, want 401", code)
+	}
+}

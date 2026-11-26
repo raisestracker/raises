@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +29,7 @@ type settingsData struct {
 	Installations   []settingsInstallation
 	InstallURL      string
 	StylePath       string
+	AppJSPath       string
 	BootstrapPrompt string
 	NewAgentToken   string
 	Delivery        settingsDeliveryHealth
@@ -49,13 +51,60 @@ type settingsInstallation struct {
 	ManageURL    string
 }
 
+// errorDetailData backs the zero-JS /errors/{id} debugging inspector. Every
+// string reaches the page through html/template auto-escaping; the page never
+// marks untrusted exception data as template.HTML.
 type errorDetailData struct {
-	Nav       navData
-	User      inbox.User
-	CSRF      string
-	StylePath string
-	Group     inbox.Group
-	Notices   []inbox.Notice
+	Nav          navData
+	User         inbox.User
+	CSRF         string
+	StylePath    string
+	AppJSPath    string
+	Group        inbox.GroupSummary
+	Project      *inbox.Project
+	Notices      []inbox.Notice
+	InAppFrames  []inbox.Frame
+	VendorFrames []inbox.Frame
+	HasLatest    bool
+	Handled      bool
+	RequestJSON  string
+	ContextJSON  string
+	Handoff      string
+}
+
+// maxInspectorFrames bounds how many frames the inspector renders per fold so
+// a pathological 10K-frame backtrace cannot bloat the page.
+const maxInspectorFrames = 200
+
+// splitInspectorFrames classifies a raw backtrace with the shared
+// inbox.ClassifyFrame so the browser, /context and Markdown agree on what is
+// in-app versus framework/library code.
+func splitInspectorFrames(backtrace []string) (inApp, vendor []inbox.Frame) {
+	for _, raw := range backtrace {
+		f := inbox.ClassifyFrame(raw)
+		if f.Raw == "" {
+			continue
+		}
+		if f.InApp {
+			if len(inApp) < maxInspectorFrames {
+				inApp = append(inApp, f)
+			}
+		} else if len(vendor) < maxInspectorFrames {
+			vendor = append(vendor, f)
+		}
+	}
+	return inApp, vendor
+}
+
+func indentedJSON(v map[string]any) string {
+	if len(v) == 0 {
+		return ""
+	}
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func (s *Server) beginGitHubAuth(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +326,7 @@ func (s *Server) renderSettingsRequest(w http.ResponseWriter, r *http.Request, s
 		}
 		installationViews = append(installationViews, view)
 	}
-	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, Nav: s.nav(session, "settings")}
+	data := settingsData{User: session.User, CSRF: session.CSRFToken, Keys: keys, Installations: installationViews, InstallURL: "https://github.com/apps/" + url.PathEscape(s.config.GitHubAppSlug) + "/installations/new", StylePath: s.stylePath, AppJSPath: s.appJSPath, BootstrapPrompt: prompt, NewAgentToken: newToken, Delivery: deliveryView, Webhook: webhookHealth, Nav: s.nav(session, "settings")}
 	s.renderPage(w, "settings.html", data)
 }
 
@@ -376,7 +425,7 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	group, err := s.store.GetForUser(r.Context(), session.User.ID, id)
+	rc, err := s.store.RemediationContextForUser(r.Context(), session.User.ID, id, 0)
 	if errors.Is(err, inbox.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -390,7 +439,32 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load notices", 500)
 		return
 	}
-	data := errorDetailData{Nav: s.nav(session, "dashboard"), User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, Group: group, Notices: notices}
+	s.populateGroupSummaryURL(&rc.Group)
+	data := errorDetailData{
+		Nav:       s.nav(session, "dashboard"),
+		User:      session.User,
+		CSRF:      session.CSRFToken,
+		StylePath: s.stylePath,
+		AppJSPath: s.appJSPath,
+		Group:     rc.Group,
+		Notices:   notices,
+		Handoff:   RenderRemediationMarkdown(rc),
+	}
+	if project, err := s.store.ProjectBySlug(r.Context(), session.User.ID, rc.Group.ProjectID); err == nil {
+		data.Project = &project
+	}
+	if len(notices) > 0 {
+		latest := notices[0]
+		data.HasLatest = true
+		data.Handled = latest.Handled
+		data.InAppFrames, data.VendorFrames = splitInspectorFrames(latest.Backtrace)
+		data.RequestJSON = indentedJSON(latest.Request)
+		data.ContextJSON = indentedJSON(latest.Context)
+	} else {
+		data.InAppFrames, data.VendorFrames = rc.Stacktrace.InAppFrames, rc.Stacktrace.VendorFrames
+		data.RequestJSON = indentedJSON(rc.LatestRequest)
+		data.ContextJSON = indentedJSON(rc.LatestContext)
+	}
 	s.renderPage(w, "error.html", data)
 }
 
@@ -429,6 +503,40 @@ func (s *Server) browserUnsuppressError(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) storeNow() time.Time { return time.Now().UTC() }
+
+// browserAckError and browserResolveError complete triage from the inspector
+// with plain CSRF-checked form posts (no JavaScript). An invalid CSRF token is
+// a 403 before any lookup; a group the session does not own is a 404, so the
+// endpoint never reveals whether another tenant's ID exists.
+func (s *Server) browserAckError(w http.ResponseWriter, r *http.Request) {
+	s.browserErrorTransition(w, r, s.store.AckForUser)
+}
+
+func (s *Server) browserResolveError(w http.ResponseWriter, r *http.Request) {
+	s.browserErrorTransition(w, r, s.store.ResolveForUser)
+}
+
+func (s *Server) browserErrorTransition(w http.ResponseWriter, r *http.Request, apply func(context.Context, int64, int64) (inbox.Group, error)) {
+	session, ok := s.browserPOST(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := apply(r.Context(), session.User.ID, id); err != nil {
+		if errors.Is(err, inbox.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("browser error transition", "error", err)
+		http.Error(w, "could not update error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/errors/%d", id), http.StatusSeeOther)
+}
 
 func ageLabel(age time.Duration) string {
 	if age < time.Minute {

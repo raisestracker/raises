@@ -17,6 +17,7 @@
           </a>
           <nav class="flex items-center gap-1 max-md:hidden" aria-label="Main">
             <a class="rounded-lg px-3 py-2 text-sm font-semibold no-underline transition-colors {{if eq .Active "dashboard"}}bg-raised text-ink{{else}}text-muted hover:text-ink{{end}}" href="/dashboard"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+            <a class="rounded-lg px-3 py-2 text-sm font-semibold no-underline transition-colors {{if eq .Active "errors"}}bg-raised text-ink{{else}}text-muted hover:text-ink{{end}}" href="/errors"{{if eq .Active "errors"}} aria-current="page"{{end}}>Errors</a>
             <a class="rounded-lg px-3 py-2 text-sm font-semibold no-underline transition-colors {{if eq .Active "settings"}}bg-raised text-ink{{else}}text-muted hover:text-ink{{end}}" href="/settings"{{if eq .Active "settings"}} aria-current="page"{{end}}>Settings</a>
           </nav>
         </div>
@@ -37,6 +38,7 @@
           </summary>
           <nav class="absolute right-0 top-full z-10 mt-2 w-56 rounded-xl border border-line-strong bg-panel p-2 shadow-panel" aria-label="Main">
             <a class="block rounded-lg px-3 py-3 text-base font-semibold no-underline {{if eq .Active "dashboard"}}bg-raised text-ink{{else}}text-muted{{end}}" href="/dashboard"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+            <a class="block rounded-lg px-3 py-3 text-base font-semibold no-underline {{if eq .Active "errors"}}bg-raised text-ink{{else}}text-muted{{end}}" href="/errors"{{if eq .Active "errors"}} aria-current="page"{{end}}>Errors</a>
             <a class="block rounded-lg px-3 py-3 text-base font-semibold no-underline {{if eq .Active "settings"}}bg-raised text-ink{{else}}text-muted{{end}}" href="/settings"{{if eq .Active "settings"}} aria-current="page"{{end}}>Settings</a>
             <form class="m-0 border-t border-line pt-2" method="post" action="/logout">
               <input type="hidden" name="csrf" value="{{.CSRF}}">

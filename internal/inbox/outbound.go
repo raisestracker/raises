@@ -12,6 +12,7 @@ import (
 const (
 	outboundJobLease       = 2 * time.Minute
 	maxOutboundJobAttempts = 20
+	outboundPruneInterval  = time.Hour
 )
 
 type OutboundSender interface {
@@ -243,6 +244,7 @@ func (s *Store) completeOutbound(ctx context.Context, id string, now time.Time) 
 func (s *Store) RunOutboundWorker(ctx context.Context, sender OutboundSender, onError func(error)) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	var lastPrune time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -250,8 +252,15 @@ func (s *Store) RunOutboundWorker(ctx context.Context, sender OutboundSender, on
 		case <-ticker.C:
 		case <-s.outboundNotify:
 		}
-		if err := s.PruneOutboundHistory(ctx); err != nil && onError != nil {
-			onError(err)
+		now := s.now().UTC()
+		if lastPrune.IsZero() || now.Sub(lastPrune) >= outboundPruneInterval {
+			if err := s.PruneOutboundHistory(ctx); err != nil {
+				if onError != nil {
+					onError(err)
+				}
+			} else {
+				lastPrune = now
+			}
 		}
 		for i := 0; i < 20; i++ {
 			if err := s.ProcessOutboundDeliveriesOnce(ctx, sender); err != nil {

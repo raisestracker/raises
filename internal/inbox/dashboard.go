@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Error status values. Suppressed groups are known false positives and only
@@ -40,12 +41,85 @@ func (g Group) ComputeStatus() string {
 // empty values fall back to the supplied default.
 func NormalizeStatus(value, fallback string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case StatusOpen, StatusAcknowledged, StatusFixed, StatusAll:
+	case StatusOpen, StatusAcknowledged, StatusFixed, StatusSuppressed, StatusAll:
 		return strings.ToLower(strings.TrimSpace(value))
 	case "acked", "ack":
 		return StatusAcknowledged
 	}
 	return fallback
+}
+
+// Search and sort facets shared by GET /v1/errors and the HTML error lists.
+const (
+	SortLastSeen  = "last_seen"
+	SortCount     = "count"
+	SortFirstSeen = "first_seen"
+
+	// MaxSearchQueryRunes caps the free-text q facet.
+	MaxSearchQueryRunes = 128
+	// MaxEnvFilterRunes caps the env facet.
+	MaxEnvFilterRunes = 80
+)
+
+// sortOrders is the strict allowlist mapping a sort key to a fixed ORDER BY
+// clause. User input never reaches SQL text; unknown keys are rejected by
+// NormalizeSort before a query is built.
+var sortOrders = map[string]string{
+	SortLastSeen:  `g.last_seen_unix DESC, g.id DESC`,
+	SortCount:     `g.count DESC, g.last_seen_unix DESC, g.id DESC`,
+	SortFirstSeen: `g.first_seen_unix DESC, g.id DESC`,
+}
+
+// NormalizeSort returns the allowlisted sort key for value (empty means
+// last_seen) and whether value was acceptable.
+func NormalizeSort(value string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return SortLastSeen, true
+	}
+	if _, ok := sortOrders[v]; ok {
+		return v, true
+	}
+	return SortLastSeen, false
+}
+
+// NormalizeSearchQuery trims q and caps it at MaxSearchQueryRunes runes.
+func NormalizeSearchQuery(q string) string {
+	return capRunes(strings.TrimSpace(q), MaxSearchQueryRunes)
+}
+
+// NormalizeEnvFilter trims env and caps it at MaxEnvFilterRunes runes.
+func NormalizeEnvFilter(env string) string {
+	return capRunes(strings.TrimSpace(env), MaxEnvFilterRunes)
+}
+
+func capRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// escapeLike neutralizes LIKE wildcards so q matches literally under
+// ESCAPE '\'.
+func escapeLike(s string) string { return likeEscaper.Replace(s) }
+
+// searchClause appends the env and q facets. They only filter rows the
+// tenant (owner/project) index already narrowed; q matches class, message
+// or location as a literal, case-insensitive (ASCII) substring.
+func searchClause(opts ListOptions, where string, args []any) (string, []any) {
+	if env := NormalizeEnvFilter(opts.Env); env != "" {
+		where += ` AND g.env = ?`
+		args = append(args, env)
+	}
+	if q := NormalizeSearchQuery(opts.Query); q != "" {
+		pattern := "%" + escapeLike(q) + "%"
+		where += ` AND (g.class LIKE ? ESCAPE '\' OR g.message LIKE ? ESCAPE '\' OR g.location LIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
+	}
+	return where, args
 }
 
 // statusClause returns a SQL condition on error_groups columns prefixed by p.
@@ -57,6 +131,8 @@ func statusClause(status, p string) string {
 		return p + "acked_at_unix IS NOT NULL AND " + p + "resolved_at_unix IS NULL AND " + p + "suppressed_at_unix IS NULL"
 	case StatusFixed:
 		return p + "resolved_at_unix IS NOT NULL AND " + p + "suppressed_at_unix IS NULL"
+	case StatusSuppressed:
+		return p + "suppressed_at_unix IS NOT NULL"
 	default:
 		return ""
 	}
@@ -73,12 +149,25 @@ type ErrorPage struct {
 // ListPageForUser returns one page of a user's errors, newest activity first.
 // project may be a project id or slug; empty means all projects.
 func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, status string, page, pageSize int) (ErrorPage, error) {
+	return s.ListPageForUserWithOptions(ctx, userID, project, status, page, pageSize, ListOptions{})
+}
+
+// ListPageForUserCompact returns one page of a user's errors; when compact is
+// true, sample_json is omitted from the SQL projection and JSON serialization.
+func (s *Store) ListPageForUserCompact(ctx context.Context, userID int64, project, status string, page, pageSize int, compact bool) (ErrorPage, error) {
+	return s.ListPageForUserWithOptions(ctx, userID, project, status, page, pageSize, ListOptions{Compact: compact})
+}
+
+// ListPageForUserWithOptions returns one page of a user's errors with optional
+// compact projection and active-claim exclusion.
+func (s *Store) ListPageForUserWithOptions(ctx context.Context, userID int64, project, status string, page, pageSize int, opts ListOptions) (ErrorPage, error) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = DefaultPageSize
 	}
 	if page < 1 {
 		page = 1
 	}
+	now := s.now().UTC()
 	where := ` WHERE a.owner_user_id = ?`
 	args := []any{userID}
 	if project != "" {
@@ -88,6 +177,13 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 	if clause := statusClause(status, "g."); clause != "" {
 		where += ` AND ` + clause
 	}
+	if opts.ExcludeClaimed {
+		where += ` AND (g.lease_expires_at_unix IS NULL OR g.lease_expires_at_unix <= ?)`
+		args = append(args, now.Unix())
+	}
+	where, args = searchClause(opts, where, args)
+	sortKey, _ := NormalizeSort(opts.Sort)
+	orderBy := sortOrders[sortKey]
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where, args...).Scan(&total); err != nil {
 		return ErrorPage{}, err
@@ -99,12 +195,20 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 	if page > pages {
 		page = pages
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+	cols := `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
 		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
-		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix, g.sample_json
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix,
+		       g.claimed_by, g.claimed_at_unix, g.lease_expires_at_unix, g.claim_note, g.sample_json`
+	if opts.Compact {
+		cols = `g.id, g.project_id, g.app_name, g.env, g.fingerprint, g.class, g.location, g.message, g.count,
+		       g.first_seen_unix, g.last_seen_unix, g.last_revision, g.github_issue_number, g.github_issue_url,
+		       g.acked_at_unix, g.suppressed_at_unix, g.resolved_at_unix,
+		       g.claimed_by, g.claimed_at_unix, g.lease_expires_at_unix, g.claim_note`
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+cols+`
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where+`
-		ORDER BY g.last_seen_unix DESC, g.id DESC LIMIT ? OFFSET ?`,
+		ORDER BY `+orderBy+` LIMIT ? OFFSET ?`,
 		append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
 		return ErrorPage{}, err
@@ -112,7 +216,15 @@ func (s *Store) ListPageForUser(ctx context.Context, userID int64, project, stat
 	defer rows.Close()
 	out := ErrorPage{Groups: []Group{}, Page: page, PageSize: pageSize, Total: total, Pages: pages}
 	for rows.Next() {
-		group, err := scanGroup(rows)
+		var (
+			group Group
+			err   error
+		)
+		if opts.Compact {
+			group, err = scanGroupCompact(rows, now)
+		} else {
+			group, err = scanGroup(rows, now)
+		}
 		if err != nil {
 			return ErrorPage{}, err
 		}
@@ -142,7 +254,8 @@ func (s *Store) setResolvedByIssue(ctx context.Context, repositoryID, installati
 		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
 	args := []any{number, repositoryID, installationID}
 	if resolved {
-		query = `UPDATE error_groups SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?)
+		query = `UPDATE error_groups SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?),
+		claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
 		WHERE github_issue_number = ? AND resolved_at_unix IS NULL
 		AND project_id IN (SELECT project_id FROM apps WHERE github_repository_id = ? AND github_installation_id = ?)`
 		args = []any{now, now, number, repositoryID, installationID}
@@ -339,6 +452,17 @@ func (s *Store) ProjectCounts(ctx context.Context, projectID string) (open, fixe
 	err = s.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COUNT(*)
 		FROM error_groups g WHERE g.project_id = ?`, statusClause(StatusOpen, "g."), statusClause(StatusFixed, "g.")), projectID).Scan(&open, &fixed, &total)
+	return
+}
+
+// UserErrorCounts returns open/fixed/total error counts across all active
+// projects owned by userID in one indexed query.
+func (s *Store) UserErrorCounts(ctx context.Context, userID int64) (open, fixed, total int, err error) {
+	err = s.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END),0), COUNT(*)
+		FROM error_groups g JOIN apps a ON a.project_id = g.project_id
+		WHERE a.owner_user_id = ? AND a.archived_at_unix IS NULL`,
+		statusClause(StatusOpen, "g."), statusClause(StatusFixed, "g.")), userID).Scan(&open, &fixed, &total)
 	return
 }
 

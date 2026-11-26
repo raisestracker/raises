@@ -57,6 +57,7 @@ env:
     NTFY_BASE_URL: <%= ENV.fetch("NTFY_BASE_URL", "https://ntfy.sh").inspect %>
     AWS_REGION: <%= ENV.fetch("AWS_REGION", "").inspect %>
     AWS_EC2_METADATA_DISABLED: "true"
+    GA_MEASUREMENT_ID: <%= ENV.fetch("GA_MEASUREMENT_ID", "").inspect %>
 
 volumes:
   - "raises_data:/data"

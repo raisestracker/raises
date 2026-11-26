@@ -14,6 +14,34 @@ const (
 	maxIssueJobAttempts = 20
 )
 
+func (s *Store) wakeIssues() {
+	select {
+	case s.jobNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) enqueueIssueJobTx(ctx context.Context, tx *sql.Tx, groupID int64, action string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_jobs WHERE group_id = ? AND action = ? AND state IN ('pending','working')`, groupID, action).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	if exists > 0 {
+		return false, nil
+	}
+	deliveryKey, err := randomID("ij_", 18)
+	if err != nil {
+		return false, err
+	}
+	now := s.now().UTC().Unix()
+	_, err = tx.ExecContext(ctx, `INSERT INTO issue_jobs(group_id,action,delivery_key,state,next_attempt_at_unix,created_at_unix) VALUES(?,?,?,'pending',?,?)`, groupID, action, deliveryKey, now, now)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) enqueueIssueJob(ctx context.Context, groupID int64, action string) error {
 	var exists int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_jobs WHERE group_id = ? AND action = ? AND state IN ('pending','working')`, groupID, action).Scan(&exists)
@@ -30,10 +58,7 @@ func (s *Store) enqueueIssueJob(ctx context.Context, groupID int64, action strin
 	now := s.now().UTC().Unix()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO issue_jobs(group_id,action,delivery_key,state,next_attempt_at_unix,created_at_unix) VALUES(?,?,?,'pending',?,?)`, groupID, action, deliveryKey, now, now)
 	if err == nil {
-		select {
-		case s.jobNotify <- struct{}{}:
-		default:
-		}
+		s.wakeIssues()
 	}
 	return err
 }
@@ -237,7 +262,11 @@ func (s *Store) RunIssueWorker(ctx context.Context, onError func(error)) {
 		case <-ticker.C:
 		case <-s.jobNotify:
 		}
+		morePending := false
 		for i := 0; i < 20; i++ {
+			if ctx.Err() != nil {
+				return
+			}
 			if err := s.ProcessIssueJobsOnce(ctx); err != nil {
 				if onError != nil {
 					onError(err)
@@ -247,8 +276,13 @@ func (s *Store) RunIssueWorker(ctx context.Context, onError func(error)) {
 			var pending int
 			_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_jobs WHERE state='pending' AND next_attempt_at_unix <= ?`, s.now().UTC().Unix()).Scan(&pending)
 			if pending == 0 {
+				morePending = false
 				break
 			}
+			morePending = true
+		}
+		if morePending && ctx.Err() == nil {
+			s.wakeIssues()
 		}
 	}
 }

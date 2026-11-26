@@ -9,6 +9,48 @@
       {{template "nav" .Nav}}
 
       <h1 class="sr-only">Dashboard</h1>
+      {{with .Reveal}}
+      <section class="mt-8 rounded-xl border border-mint-dark bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="reveal-heading" data-project-reveal>
+        <h2 class="mb-1 text-lg font-bold tracking-tight" id="reveal-heading">{{.Project.Name}} is ready</h2>
+        <p class="mb-4 text-sm text-muted">Copy this ingestion token now. It is shown once and never appears in a URL or after a reload. Store it as <code class="font-mono text-ink">RAISES_TOKEN</code>.</p>
+        <label class="mb-2 block text-sm font-semibold text-ink" for="new-project-token">RAISES_TOKEN</label>
+        <textarea class="w-full overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line-strong bg-inset p-3 font-mono text-[13px] leading-6 text-ink" id="new-project-token" readonly rows="2" data-autofocus>{{.Token}}</textarea>
+        <div class="mt-2 flex flex-wrap items-center gap-3">
+          <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby-dark px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-ruby-strong" type="button" data-copy-target="new-project-token" data-copy-status="new-project-token-status" hidden>Copy token</button>
+          <span class="min-h-5 text-[13px] text-mint" id="new-project-token-status" role="status" aria-live="polite"></span>
+        </div>
+        <h3 class="mb-2 mt-6 text-sm font-bold uppercase tracking-[.09em] text-muted">Send a first error</h3>
+        <div class="grid gap-4 lg:grid-cols-2">
+          {{template "snippet" (snippet "snippet-curl" "curl" .Curl)}}
+          {{template "snippet" (snippet "snippet-rails" "Rails" .Rails)}}
+          {{template "snippet" (snippet "snippet-go" "Go" .Go)}}
+          {{template "snippet" (snippet "snippet-js" "JavaScript (fetch)" .JS)}}
+          {{template "snippet" (snippet "snippet-sentry" "Sentry SDK (SENTRY_DSN)" .SentryDSN)}}
+        </div>
+        <p class="mt-4 text-sm text-muted">The error shows up in <a class="font-semibold text-ruby-light" href="/projects/{{.Project.Slug}}">{{.Project.Name}}</a> within seconds.</p>
+      </section>
+      {{end}}
+
+      <details class="mt-8 rounded-xl border border-line bg-panel p-5 shadow-panel max-sm:p-4" id="new-project"{{if or (not .Stats.ProjectSummary) .Form.Error}} open{{end}}>
+        <summary class="cursor-pointer text-base font-bold tracking-tight text-ink">{{if .Stats.ProjectSummary}}New project{{else}}Create your first project{{end}}</summary>
+        <form class="mt-4" method="post" action="/dashboard/projects">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+            <div class="min-w-0">
+              <label class="mb-2 block text-sm font-semibold text-ink" for="project-name">Project name</label>
+              <input class="w-full rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 text-ink placeholder:text-quiet" id="project-name" name="name" value="{{.Form.Name}}" placeholder="e.g. Storefront" maxlength="100" required>
+            </div>
+            <div class="min-w-0">
+              <label class="mb-2 block text-sm font-semibold text-ink" for="project-slug">Slug <span class="font-normal text-muted">(optional)</span></label>
+              <input class="w-full rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 font-mono text-ink placeholder:text-quiet" id="project-slug" name="slug" value="{{.Form.Slug}}" placeholder="storefront" maxlength="63" pattern="[a-z0-9]+(-[a-z0-9]+)*" aria-describedby="project-slug-hint">
+            </div>
+            <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby-dark px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-strong" type="submit">Create project</button>
+          </div>
+          <p class="mt-2 text-[13px] leading-5 text-muted" id="project-slug-hint">Creates the project and its first <code class="font-mono">RAISES_TOKEN</code> in one step. Lowercase letters, numbers and hyphens; left blank, it is derived from the name.</p>
+          {{if .Form.Error}}<p class="mt-2 text-[13px] font-semibold text-ruby-light" role="alert">{{.Form.Error}}</p>{{end}}
+        </form>
+      </details>
+
       <section class="mt-8 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:gap-3" aria-label="Summary">
         {{template "tile" (tile .Stats.Open "open errors" .Stats.OpenSpark "ruby")}}
         {{template "tile" (tile .Stats.NewToday "new today" .Stats.NewSpark "ruby")}}
@@ -36,7 +78,7 @@
           {{end}}
         </ul>
         {{else}}
-        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No errors yet. Once an app reports one it shows up here within seconds. <a class="font-semibold text-ruby-light" href="/settings">Set up an agent in Settings.</a></p>
+        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No errors yet. Once an app reports one it shows up here within seconds. Create a project above and send a test error, or <a class="font-semibold text-ruby-light" href="/settings">set up an agent in Settings</a>.</p>
         {{end}}
       </section>
 
@@ -57,13 +99,25 @@
           {{end}}
         </ul>
         {{else}}
-        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No projects yet. Create one from your agent; see <a class="font-semibold text-ruby-light" href="/settings">Settings</a>.</p>
+        <p class="rounded-xl border border-dashed border-line-strong p-6 text-muted">No projects yet. Create one above in one step, or let your agent create one; see <a class="font-semibold text-ruby-light" href="/settings">Settings</a>.</p>
         {{end}}
       </section>
       {{template "footer"}}
     </main>
+    <script defer src="{{.AppJSPath}}"></script>
   </body>
 </html>
+
+{{define "snippet"}}
+          <div class="min-w-0">
+            <label class="mb-1 block text-[13px] font-semibold text-muted" for="{{.ID}}">{{.Label}}</label>
+            <textarea class="w-full overflow-auto whitespace-pre rounded-lg border border-line bg-inset p-3 font-mono text-[12px] leading-5 text-ink" id="{{.ID}}" readonly rows="7">{{.Body}}</textarea>
+            <div class="flex items-center gap-3">
+              <button class="mt-1 inline-flex min-h-9 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-raised px-3 py-1.5 text-[13px] font-bold text-ink transition-colors hover:border-ink" type="button" data-copy-target="{{.ID}}" data-copy-status="{{.ID}}-status" hidden>Copy {{.Label}}</button>
+              <span class="min-h-5 text-[13px] text-mint" id="{{.ID}}-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+{{end}}
 
 {{define "tile"}}
         <div class="rounded-xl bg-panel p-5 shadow-panel max-sm:p-4">

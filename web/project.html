@@ -16,11 +16,34 @@
         </div>
       </div>
 
-      <nav class="mt-6 flex flex-wrap gap-2" aria-label="Filter by status">
+      <form class="mt-6 grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_12rem_auto] sm:items-end" method="get" action="{{.Base}}" role="search" aria-label="Search errors">
+        {{if ne .Status "open"}}<input type="hidden" name="status" value="{{.Status}}">{{end}}
+        <div class="min-w-0">
+          <label class="mb-1 block text-[13px] font-semibold text-muted" for="search-q">Search</label>
+          <input class="w-full rounded-lg border border-line-strong bg-inset px-3 py-2 text-sm text-ink placeholder:text-quiet" id="search-q" type="search" name="q" value="{{.Search.Query}}" maxlength="128" placeholder="Class, message or file">
+        </div>
+        <div class="min-w-0">
+          <label class="mb-1 block text-[13px] font-semibold text-muted" for="search-env">Environment</label>
+          <input class="w-full rounded-lg border border-line-strong bg-inset px-3 py-2 text-sm text-ink placeholder:text-quiet" id="search-env" name="env" value="{{.Search.Env}}" maxlength="80" placeholder="Any">
+        </div>
+        <div class="min-w-0">
+          <label class="mb-1 block text-[13px] font-semibold text-muted" for="search-sort">Sort</label>
+          <select class="w-full rounded-lg border border-line-strong bg-inset px-3 py-2 text-sm text-ink" id="search-sort" name="sort">
+            {{range .Sorts}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+          </select>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-raised px-4 py-2 text-sm font-bold text-ink transition-colors hover:border-ink" type="submit">Search</button>
+          {{if .Searching}}<a class="text-sm font-semibold text-muted hover:text-ink" href="{{.ClearURL}}">Clear</a>{{end}}
+        </div>
+      </form>
+
+      <nav class="mt-4 flex flex-wrap gap-2" aria-label="Filter by status">
         {{range .Filters}}
         <a class="rounded-full px-4 py-2 text-sm font-semibold no-underline transition-colors {{if .Active}}bg-ink text-canvas{{else}}bg-panel text-muted hover:text-ink{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
         {{end}}
       </nav>
+      {{if .Searching}}<p class="mt-3 text-sm text-muted" role="status">{{.Page.Total}} {{if eq .Page.Total 1}}match{{else}}matches{{end}}</p>{{end}}
 
       {{if .Page.Groups}}
       <ul class="mt-4 list-none divide-y divide-line p-0">
@@ -29,7 +52,8 @@
           <a class="grid grid-cols-[minmax(0,1fr)_auto_6rem_auto] items-center gap-x-5 px-1 py-3.5 no-underline hover:bg-panel max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-y-1" href="/errors/{{.ID}}">
             <span class="min-w-0">
               <span class="block truncate font-semibold text-ink">{{.Class}}<span class="font-normal text-muted"> {{.Message}}</span></span>
-              <span class="block truncate font-mono text-[12px] text-quiet">{{if $.ShowApp}}{{.App}} · {{end}}{{.Location}}</span>
+              <span class="block truncate font-mono text-[12px] text-muted">{{if $.ShowApp}}{{.App}} · {{end}}{{if .Env}}{{.Env}} · {{end}}{{.Location}}</span>
+              <span class="mt-0.5 block text-[13px] text-muted tabular-nums sm:hidden">seen {{.Count}}× · {{ago .LastSeen}}</span>
             </span>
             <span class="text-sm text-muted tabular-nums max-sm:hidden">seen {{.Count}}×</span>
             <span class="text-sm text-muted max-sm:hidden">{{ago .LastSeen}}</span>

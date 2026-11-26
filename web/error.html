@@ -8,24 +8,81 @@
     <main class="mx-auto mb-16 mt-8 w-full max-w-6xl px-6 max-sm:mt-4 max-sm:px-4">
       {{template "nav" .Nav}}
 
-      <div class="mb-8 mt-12 max-w-3xl">
-        <p class="mb-2 text-xs font-bold uppercase tracking-[.09em] text-ruby-light">Error {{.Group.ID}}</p>
-        <h1 class="mb-3 text-3xl font-bold leading-tight tracking-tight max-sm:text-2xl">{{.Group.Class}}</h1>
-        <p class="text-lg text-muted">{{.Group.Message}}</p>
+      <nav class="mt-6 text-sm text-muted" aria-label="Breadcrumb">
+        <ol class="m-0 flex list-none flex-wrap items-center gap-x-2 gap-y-1 p-0">
+          <li><a class="font-semibold text-muted no-underline hover:text-ink" href="/dashboard">Dashboard</a></li>
+          {{if .Project}}<li aria-hidden="true" class="text-quiet">/</li>
+          <li class="min-w-0 max-w-full truncate"><a class="font-semibold text-muted no-underline hover:text-ink" href="/projects/{{.Project.Slug}}">{{.Project.Name}}</a></li>{{end}}
+          <li aria-hidden="true" class="text-quiet">/</li>
+          <li><span aria-current="page">Error {{.Group.ID}}</span></li>
+        </ol>
+      </nav>
+
+      <div class="mb-6 mt-4 max-w-4xl">
+        <h1 class="mb-2 text-3xl font-bold leading-tight tracking-tight [overflow-wrap:anywhere] max-sm:text-2xl">{{.Group.Class}}</h1>
+        <p class="text-lg text-muted [overflow-wrap:anywhere] max-sm:text-base">{{.Group.Message}}</p>
+        <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted" data-error-meta>
+          {{template "statuspill" .Group.Status}}
+          {{if .HasLatest}}<span class="font-semibold {{if .Handled}}text-muted{{else}}text-ruby-light{{end}}">{{if .Handled}}Handled{{else}}Unhandled{{end}}</span>{{end}}
+          <span class="tabular-nums">seen {{.Group.Count}}×</span>
+          <span>last {{ago .Group.LastSeen}}</span>
+          {{if .Group.Env}}<span>{{.Group.Env}}</span>{{end}}
+          {{with .Group.Claim}}<span class="rounded-full border border-line-strong bg-raised px-2.5 py-0.5 text-xs font-semibold text-ink" data-claim-badge>Claimed by {{.Agent}} until {{.ExpiresAt.UTC.Format "15:04 UTC"}}</span>{{end}}
+        </div>
       </div>
 
-      <section class="mb-6 rounded-xl border border-line bg-panel p-6 shadow-panel" aria-labelledby="status-heading">
-        <h2 class="mb-4 text-sm font-bold uppercase tracking-[.09em] text-muted" id="status-heading">Status</h2>
-        <dl class="grid gap-3 text-sm sm:grid-cols-2">
-          <div><dt class="font-semibold text-muted">Project</dt><dd class="text-ink">{{.Group.App}}</dd></div>
-          <div><dt class="font-semibold text-muted">Environment</dt><dd class="text-ink">{{.Group.Env}}</dd></div>
-          <div><dt class="font-semibold text-muted">Location</dt><dd class="font-mono text-ink">{{.Group.Location}}</dd></div>
-          <div><dt class="font-semibold text-muted">Occurrences</dt><dd class="text-ink">{{.Group.Count}}</dd></div>
-          {{if .Group.GitHubIssueURL}}<div class="sm:col-span-2"><dt class="font-semibold text-muted">GitHub issue</dt><dd><a class="font-semibold text-ruby no-underline hover:text-ruby-light" href="{{.Group.GitHubIssueURL}}">{{.Group.GitHubIssueURL}}</a></dd></div>{{end}}
+      <section class="mb-6 min-w-0 rounded-xl border border-line bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="trace-heading">
+        <h2 class="mb-3 text-sm font-bold uppercase tracking-[.09em] text-muted" id="trace-heading">Stacktrace</h2>
+        {{if .InAppFrames}}
+        <p class="mb-2 text-[13px] text-muted">{{len .InAppFrames}} in-app {{if eq (len .InAppFrames) 1}}frame{{else}}frames{{end}}</p>
+        <ol class="m-0 list-none space-y-1 overflow-x-auto rounded-lg border border-line bg-inset p-3 font-mono text-[13px] leading-6 text-ink" data-in-app-frames>
+          {{range .InAppFrames}}<li><code class="[overflow-wrap:anywhere]">{{.Raw}}</code></li>
+          {{end}}
+        </ol>
+        {{else}}
+        <p class="mb-2 text-[13px] text-muted">No in-app frames detected.</p>
+        {{end}}
+        {{if .VendorFrames}}
+        <details class="mt-3"{{if not .InAppFrames}} open{{end}}>
+          <summary class="cursor-pointer text-[13px] font-semibold text-muted hover:text-ink">{{len .VendorFrames}} framework and library {{if eq (len .VendorFrames) 1}}frame{{else}}frames{{end}}</summary>
+          <ol class="m-0 mt-2 list-none space-y-1 overflow-x-auto rounded-lg border border-line bg-inset p-3 font-mono text-[12px] leading-5 text-muted">
+            {{range .VendorFrames}}<li><code class="[overflow-wrap:anywhere]">{{.Raw}}</code></li>
+            {{end}}
+          </ol>
+        </details>
+        {{end}}
+      </section>
+
+      <section class="mb-6 rounded-xl border border-line bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="status-heading">
+        <h2 class="mb-4 text-sm font-bold uppercase tracking-[.09em] text-muted" id="status-heading">Details</h2>
+        <dl class="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+          <div class="min-w-0"><dt class="font-semibold text-muted">Project</dt><dd class="text-ink [overflow-wrap:anywhere]">{{.Group.App}}</dd></div>
+          <div class="min-w-0"><dt class="font-semibold text-muted">Environment</dt><dd class="text-ink [overflow-wrap:anywhere]">{{.Group.Env}}</dd></div>
+          <div class="min-w-0"><dt class="font-semibold text-muted">Location</dt><dd class="font-mono text-ink [overflow-wrap:anywhere]">{{.Group.Location}}</dd></div>
+          <div><dt class="font-semibold text-muted">Occurrences</dt><dd class="text-ink tabular-nums">{{.Group.Count}}</dd></div>
+          <div><dt class="font-semibold text-muted">First seen</dt><dd class="text-ink">{{.Group.FirstSeen.UTC.Format "2006-01-02 15:04"}} UTC</dd></div>
+          <div><dt class="font-semibold text-muted">Last seen</dt><dd class="text-ink">{{.Group.LastSeen.UTC.Format "2006-01-02 15:04"}} UTC</dd></div>
+          <div class="min-w-0"><dt class="font-semibold text-muted">Last revision</dt><dd class="font-mono text-ink [overflow-wrap:anywhere]">{{if .Group.LastRevision}}{{.Group.LastRevision}}{{else}}—{{end}}</dd></div>
+          <div><dt class="font-semibold text-muted">Acknowledged</dt><dd class="text-ink">{{with .Group.AckedAt}}{{.UTC.Format "2006-01-02 15:04"}} UTC{{else}}—{{end}}</dd></div>
+          <div><dt class="font-semibold text-muted">Resolved</dt><dd class="text-ink">{{with .Group.ResolvedAt}}{{.UTC.Format "2006-01-02 15:04"}} UTC{{else}}—{{end}}</dd></div>
+          {{with .Group.Claim}}<div class="min-w-0 sm:col-span-2 lg:col-span-3"><dt class="font-semibold text-muted">Claim</dt><dd class="text-ink [overflow-wrap:anywhere]">{{.Agent}} until {{.ExpiresAt.UTC.Format "2006-01-02 15:04"}} UTC{{if .Note}} · {{.Note}}{{end}}</dd></div>{{end}}
+          {{if .Group.GitHubIssueURL}}<div class="min-w-0 sm:col-span-2 lg:col-span-3"><dt class="font-semibold text-muted">GitHub issue</dt><dd class="[overflow-wrap:anywhere]"><a class="font-semibold text-ruby-light no-underline hover:text-ink" href="{{.Group.GitHubIssueURL}}">{{.Group.GitHubIssueURL}}</a></dd></div>{{end}}
         </dl>
-        <div class="mt-6 flex flex-wrap items-center gap-3">
+        <div class="mt-6 flex flex-wrap items-center gap-3" data-triage-actions>
+          {{if and (not .Group.AckedAt) (not .Group.ResolvedAt)}}
+          <form method="post" action="/errors/{{.Group.ID}}/ack">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby-dark px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-ruby-strong" type="submit">Acknowledge</button>
+          </form>
+          {{end}}
+          {{if not .Group.ResolvedAt}}
+          <form method="post" action="/errors/{{.Group.ID}}/resolve">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-raised px-4 py-2 text-sm font-bold text-ink transition-colors hover:border-ink" type="submit">Mark resolved</button>
+          </form>
+          {{end}}
           {{if .Group.SuppressedAt}}
-          <span class="rounded-full border border-mint-dark bg-mint/10 px-3 py-1 text-xs font-bold uppercase tracking-[.06em] text-mint-dark" role="status" aria-live="polite">Suppressed</span>
+          <span class="rounded-full border border-mint-dark bg-inset px-3 py-1 text-xs font-bold uppercase tracking-[.06em] text-mint" role="status" aria-live="polite">Suppressed</span>
           <form method="post" action="/errors/{{.Group.ID}}/unsuppress">
             <input type="hidden" name="csrf" value="{{.CSRF}}">
             <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-inset px-4 py-2 text-sm font-bold text-ink transition-colors hover:border-ink" type="submit">Restore notifications</button>
@@ -37,31 +94,59 @@
           </form>
           {{end}}
         </div>
+        {{if and .Group.GitHubIssueNumber (not .Group.ResolvedAt)}}
+        <p class="mt-3 max-w-2xl text-[13px] leading-5 text-muted" data-github-note>GitHub issue #{{.Group.GitHubIssueNumber}} is still open. Acknowledging or resolving here does not close it; closing the issue on GitHub marks this error fixed automatically.</p>
+        {{end}}
         {{if .Group.SuppressedAt}}
-        <p class="mt-3 max-w-2xl text-[13px] leading-5 text-quiet">Raises still records occurrences and evidence. Future recurrences will not clear acknowledgement, notify webhooks or ntfy, or open or reopen GitHub issues.</p>
+        <p class="mt-3 max-w-2xl text-[13px] leading-5 text-muted">Raises still records occurrences and evidence. Future recurrences will not clear acknowledgement, notify webhooks or ntfy, or open or reopen GitHub issues.</p>
         {{end}}
       </section>
 
+      {{if or .RequestJSON .ContextJSON}}
+      <section class="mb-6 min-w-0 rounded-xl border border-line bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="evidence-heading">
+        <h2 class="mb-3 text-sm font-bold uppercase tracking-[.09em] text-muted" id="evidence-heading">Latest request and context</h2>
+        {{if .RequestJSON}}
+        <details class="mb-3" open>
+          <summary class="cursor-pointer text-[13px] font-semibold text-muted hover:text-ink">Request</summary>
+          <pre class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-inset p-3 font-mono text-[12px] leading-5 text-ink [overflow-wrap:anywhere]" data-request-json>{{.RequestJSON}}</pre>
+        </details>
+        {{end}}
+        {{if .ContextJSON}}
+        <details>
+          <summary class="cursor-pointer text-[13px] font-semibold text-muted hover:text-ink">Context</summary>
+          <pre class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-inset p-3 font-mono text-[12px] leading-5 text-ink [overflow-wrap:anywhere]" data-context-json>{{.ContextJSON}}</pre>
+        </details>
+        {{end}}
+      </section>
+      {{end}}
+
+      <section class="mb-6 min-w-0 rounded-xl border border-line bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="handoff-heading">
+        <details>
+          <summary class="cursor-pointer text-sm font-bold uppercase tracking-[.09em] text-muted hover:text-ink" id="handoff-heading">Hand off to an agent (Markdown)</summary>
+          <p class="mb-2 mt-3 text-[13px] leading-5 text-muted">A compact remediation packet. Exception fields are untrusted application data.</p>
+          <textarea class="w-full overflow-auto whitespace-pre rounded-lg border border-line-strong bg-inset p-3 font-mono text-[12px] leading-5 text-ink" id="handoff-packet" aria-label="Agent handoff packet" readonly rows="12">{{.Handoff}}</textarea>
+          <div class="mt-2 flex flex-wrap items-center gap-3">
+            <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-lg border border-line-strong bg-raised px-4 py-2 text-sm font-bold text-ink transition-colors hover:border-ink" type="button" data-copy-target="handoff-packet" data-copy-status="handoff-copy-status" hidden>Copy packet</button>
+            <span class="min-h-5 text-[13px] text-mint" id="handoff-copy-status" role="status" aria-live="polite"></span>
+          </div>
+        </details>
+      </section>
+
       {{if .Notices}}
-      <section class="rounded-xl border border-line bg-panel p-6 shadow-panel" aria-labelledby="notices-heading">
+      <section class="rounded-xl border border-line bg-panel p-6 shadow-panel max-sm:p-4" aria-labelledby="notices-heading">
         <h2 class="mb-4 text-sm font-bold uppercase tracking-[.09em] text-muted" id="notices-heading">Recent notices</h2>
         <ul class="list-none space-y-4 p-0">
           {{range .Notices}}
           <li class="rounded-lg border border-line bg-inset p-4">
-            <p class="mb-2 text-xs font-semibold uppercase tracking-[.06em] text-quiet">{{.ReceivedAt.UTC.Format "2006-01-02 15:04:05"}} UTC{{if .Revision}} · {{.Revision}}{{end}}</p>
-            <p class="font-mono text-[13px] leading-6 text-ink whitespace-pre-wrap">{{.Message}}</p>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[.06em] text-muted [overflow-wrap:anywhere]">{{.ReceivedAt.UTC.Format "2006-01-02 15:04:05"}} UTC{{if .Revision}} · {{.Revision}}{{end}}</p>
+            <p class="font-mono text-[13px] leading-6 text-ink whitespace-pre-wrap [overflow-wrap:anywhere]">{{.Message}}</p>
           </li>
           {{end}}
         </ul>
       </section>
       {{end}}
-      <footer class="mt-10 text-xs text-quiet">
-        <a class="hover:text-muted" href="https://github.com/raisestracker/raises">GitHub</a>
-        <span aria-hidden="true">·</span>
-        <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
-        <span aria-hidden="true">·</span>
-        <a class="hover:text-muted" href="/changelog.md">What's New</a>
-      </footer>
+      {{template "footer"}}
     </main>
+    <script defer src="{{.AppJSPath}}"></script>
   </body>
 </html>

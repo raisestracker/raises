@@ -15,11 +15,24 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const defaultKeepNotices = 50
+const (
+	defaultKeepNotices      = 50
+	lastUsedDebounceSeconds = 60
+
+	maxSeenRevisions             = 10
+	emptyRevisionResolveCooldown = 10 * time.Minute
+
+	DefaultClaimTTL  = 15 * time.Minute
+	MaxClaimTTL      = 2 * time.Hour
+	maxClaimAgentLen = 80
+	maxClaimNoteLen  = 256
+)
 
 var ErrUnauthorized = errors.New("unauthorized")
 var ErrNotFound = errors.New("not found")
 var ErrLimit = errors.New("limit reached")
+var ErrClaimConflict = errors.New("error group is already claimed")
+var ErrInvalidClaim = errors.New("invalid claim")
 
 type App struct {
 	ID                   string
@@ -34,17 +47,36 @@ type App struct {
 }
 
 type Notice struct {
-	App        string         `json:"app"`
-	Env        string         `json:"env"`
-	Revision   string         `json:"revision"`
-	Handled    bool           `json:"handled"`
-	Class      string         `json:"class"`
-	Message    string         `json:"message"`
-	Backtrace  []string       `json:"backtrace"`
-	Location   string         `json:"location"`
-	Context    map[string]any `json:"context,omitempty"`
-	Request    map[string]any `json:"request,omitempty"`
-	ReceivedAt time.Time      `json:"received_at"`
+	App         string         `json:"app"`
+	Env         string         `json:"env"`
+	Revision    string         `json:"revision"`
+	Handled     bool           `json:"handled"`
+	Class       string         `json:"class"`
+	Message     string         `json:"message"`
+	Backtrace   []string       `json:"backtrace"`
+	Location    string         `json:"location"`
+	Fingerprint []string       `json:"fingerprint,omitempty"`
+	Context     map[string]any `json:"context,omitempty"`
+	Request     map[string]any `json:"request,omitempty"`
+	ReceivedAt  time.Time      `json:"received_at"`
+}
+
+type Claim struct {
+	Agent     string    `json:"agent"`
+	ClaimedAt time.Time `json:"claimed_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Note      string    `json:"note,omitempty"`
+}
+
+type ListOptions struct {
+	Compact        bool
+	ExcludeClaimed bool
+	// Query, Env and Sort are the paged-list search facets: Query is a
+	// literal (LIKE-escaped) substring of class, message or location, Env an
+	// exact environment, Sort one of last_seen, count or first_seen.
+	Query string
+	Env   string
+	Sort  string
 }
 
 type Group struct {
@@ -62,11 +94,13 @@ type Group struct {
 	LastRevision      string     `json:"last_revision"`
 	GitHubIssueNumber int        `json:"github_issue_number,omitempty"`
 	GitHubIssueURL    string     `json:"github_issue_url,omitempty"`
+	URL               string     `json:"url,omitempty"`
 	AckedAt           *time.Time `json:"acked_at,omitempty"`
 	SuppressedAt      *time.Time `json:"suppressed_at,omitempty"`
 	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	Claim             *Claim     `json:"claim,omitempty"`
 	Status            string     `json:"status"`
-	Sample            Notice     `json:"sample"`
+	Sample            Notice     `json:"sample,omitzero"`
 }
 
 type IngestResult struct {
@@ -130,11 +164,31 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func sqliteDSN(path string) string {
+	const (
+		memParams  = "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+		fileParams = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=journal_size_limit(67108864)&_txlock=immediate"
+	)
+	trimmed := strings.TrimSpace(path)
+	isMem := trimmed == ":memory:" || strings.HasPrefix(trimmed, "file::memory:") || strings.Contains(trimmed, "mode=memory")
+	params := fileParams
+	if isMem {
+		params = memParams
+		if trimmed == ":memory:" {
+			return "file::memory:?" + params
+		}
+	}
+	if strings.Contains(trimmed, "?") {
+		return trimmed + "&" + params
+	}
+	return trimmed + "?" + params
+}
+
 func Open(path string, now func() time.Time, filer IssueFiler) (*Store, error) {
 	if now == nil {
 		now = time.Now
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -157,8 +211,6 @@ func (s *Store) Ping(ctx context.Context) error {
 
 func (s *Store) initialize(ctx context.Context) error {
 	statements := []string{
-		`PRAGMA journal_mode = WAL`,
-		`PRAGMA busy_timeout = 5000`,
 		`CREATE TABLE IF NOT EXISTS apps (
 			name TEXT PRIMARY KEY,
 			slug TEXT NOT NULL DEFAULT '',
@@ -186,11 +238,16 @@ func (s *Store) initialize(ctx context.Context) error {
 			first_seen_unix INTEGER NOT NULL,
 			last_seen_unix INTEGER NOT NULL,
 			last_revision TEXT NOT NULL DEFAULT '',
+			seen_revisions_json TEXT NOT NULL DEFAULT '[]',
 			github_issue_number INTEGER NOT NULL DEFAULT 0,
 			github_issue_url TEXT NOT NULL DEFAULT '',
 			acked_at_unix INTEGER,
 			suppressed_at_unix INTEGER,
 			resolved_at_unix INTEGER,
+			claimed_by TEXT NOT NULL DEFAULT '',
+			claimed_at_unix INTEGER,
+			lease_expires_at_unix INTEGER,
+			claim_note TEXT NOT NULL DEFAULT '',
 			sample_json TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS notices (
@@ -256,17 +313,36 @@ func (s *Store) UpsertApp(ctx context.Context, name, token, repo string) error {
 func (s *Store) AppByToken(ctx context.Context, token string) (App, error) {
 	var app App
 	var archived sql.NullInt64
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+
+	// Indexed primary lookup on project_tokens(token_hash) joined to apps(project_id).
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.project_id, a.slug, a.display_name, a.token_hash, a.github_repo, a.owner_user_id,
-		       a.github_installation_id, a.github_repository_id, a.archived_at_unix
-		FROM apps a
-		LEFT JOIN project_tokens pt ON pt.project_id = a.project_id AND pt.revoked_at_unix IS NULL
-		WHERE a.archived_at_unix IS NULL AND (a.token_hash = ? OR pt.token_hash = ?)
+		       a.github_installation_id, a.github_repository_id, a.archived_at_unix,
+		       pt.last_used_at_unix
+		FROM project_tokens pt
+		JOIN apps a ON a.project_id = pt.project_id
+		WHERE pt.token_hash = ? AND pt.revoked_at_unix IS NULL AND a.archived_at_unix IS NULL
 		LIMIT 1
-	`, HashToken(token), HashToken(token)).Scan(
+	`, tokenHash).Scan(
 		&app.ID, &app.Name, &app.DisplayName, &app.TokenHash, &app.GitHubRepo, &app.OwnerUserID,
-		&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived,
+		&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived, &lastUsed,
 	)
+	fromProjectToken := err == nil
+	if errors.Is(err, sql.ErrNoRows) {
+		// Fallback for legacy apps.token_hash (used in internal/unit tests via UpsertApp).
+		err = s.db.QueryRowContext(ctx, `
+			SELECT project_id, slug, display_name, token_hash, github_repo, owner_user_id,
+			       github_installation_id, github_repository_id, archived_at_unix
+			FROM apps
+			WHERE token_hash = ? AND token_hash != '' AND archived_at_unix IS NULL
+			LIMIT 1
+		`, tokenHash).Scan(
+			&app.ID, &app.Name, &app.DisplayName, &app.TokenHash, &app.GitHubRepo, &app.OwnerUserID,
+			&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived,
+		)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return App{}, ErrUnauthorized
 	}
@@ -277,13 +353,25 @@ func (s *Store) AppByToken(ctx context.Context, token string) (App, error) {
 		t := time.Unix(archived.Int64, 0).UTC()
 		app.ArchivedAt = &t
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE project_tokens SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	if fromProjectToken {
+		now := s.now().UTC().Unix()
+		if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+			_, _ = s.db.ExecContext(ctx, `UPDATE project_tokens SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+		}
+	}
 	return app, nil
 }
 
 func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (IngestResult, error) {
 	app, err := s.AppByToken(ctx, token)
 	if err != nil {
+		return IngestResult{}, err
+	}
+	return s.IngestForApp(ctx, app, notice)
+}
+
+func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (IngestResult, error) {
+	if err := ValidateFingerprintParts(notice.Fingerprint); err != nil {
 		return IngestResult{}, err
 	}
 	if notice.Class == "" {
@@ -294,7 +382,7 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	}
 	notice.App = app.Name
 	notice.ReceivedAt = s.now().UTC()
-	fp, location := Fingerprint(notice.Class, notice.Backtrace, notice.Context)
+	fp, location := FingerprintWithCustom(notice.Class, notice.Backtrace, notice.Context, notice.Fingerprint)
 	notice.Location = location
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -304,20 +392,21 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		group          Group
-		ackedUnix      sql.NullInt64
-		suppressedUnix sql.NullInt64
-		resolvedUnix   sql.NullInt64
-		sampleRaw      string
+		group            Group
+		seenRevisionsRaw string
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		sampleRaw        string
 	)
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
-		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
+		       first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, github_issue_number, github_issue_url,
 		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
 		FROM error_groups WHERE project_id = ? AND env = ? AND fingerprint = ?
 	`, app.ID, notice.Env, fp).Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
-		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
+		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &seenRevisionsRaw, &group.GitHubIssueNumber, &group.GitHubIssueURL,
 		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
 	)
 
@@ -325,8 +414,10 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	if err != nil && !created {
 		return IngestResult{}, err
 	}
+	var seenRevs []string
 	if !created {
 		_ = json.Unmarshal([]byte(sampleRaw), &group.Sample)
+		seenRevs = parseSeenRevisions(seenRevisionsRaw, group.LastRevision)
 		if ackedUnix.Valid {
 			t := time.Unix(ackedUnix.Int64, 0).UTC()
 			group.AckedAt = &t
@@ -355,17 +446,35 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		return IngestResult{}, err
 	}
 
+	updatedSeenRevs, revAlreadySeen := recordSeenRevision(seenRevs, notice.Revision, maxSeenRevisions)
+	seenRevsBytes, err := json.Marshal(updatedSeenRevs)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	seenRevsJSON := string(seenRevsBytes)
+
 	suppressed := group.SuppressedAt != nil
-	regressed := !created && !suppressed && group.AckedAt != nil && notice.Revision != "" && notice.Revision != group.LastRevision
+	regressed := false
+	if !created && !suppressed {
+		if notice.Revision != "" {
+			if (group.AckedAt != nil || group.ResolvedAt != nil) && !revAlreadySeen {
+				regressed = true
+			}
+		} else if group.ResolvedAt != nil && notice.ReceivedAt.Sub(*group.ResolvedAt) >= emptyRevisionResolveCooldown {
+			// Empty-revision cooldown applies strictly to resolved_at + 10m ONLY
+			// (never acked_at, preventing false regression storms on open PRs).
+			regressed = true
+		}
+	}
 	nowUnix := notice.ReceivedAt.Unix()
 
 	if created {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO error_groups (
 				project_id, app_name, env, fingerprint, class, location, message, count,
-				first_seen_unix, last_seen_unix, last_revision, sample_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
-		`, app.ID, app.Name, notice.Env, fp, notice.Class, location, notice.Message, nowUnix, nowUnix, notice.Revision, string(payload))
+				first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, sample_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+		`, app.ID, app.Name, notice.Env, fp, notice.Class, location, notice.Message, nowUnix, nowUnix, notice.Revision, seenRevsJSON, string(payload))
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -388,7 +497,9 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	} else {
 		group.Count++
 		group.LastSeen = notice.ReceivedAt
-		group.LastRevision = notice.Revision
+		if notice.Revision != "" {
+			group.LastRevision = notice.Revision
+		}
 		group.Message = notice.Message
 		if regressed {
 			group.AckedAt = nil
@@ -396,11 +507,11 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE error_groups
-			SET count = ?, last_seen_unix = ?, last_revision = ?, message = ?,
+			SET count = ?, last_seen_unix = ?, last_revision = ?, seen_revisions_json = ?, message = ?,
 			    acked_at_unix = CASE WHEN ? THEN NULL ELSE acked_at_unix END,
 			    resolved_at_unix = CASE WHEN ? THEN NULL ELSE resolved_at_unix END
 			WHERE id = ?
-		`, group.Count, nowUnix, notice.Revision, notice.Message, boolToInt(regressed), boolToInt(regressed), group.ID)
+		`, group.Count, nowUnix, group.LastRevision, seenRevsJSON, notice.Message, boolToInt(regressed), boolToInt(regressed), group.ID)
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -436,21 +547,17 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 			return IngestResult{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM notices WHERE group_id = ? AND id NOT IN (
-			SELECT id FROM notices WHERE group_id = ? ORDER BY id DESC LIMIT ?
-		)
-	`, group.ID, group.ID, s.keepNotices); err != nil {
-		return IngestResult{}, err
+	if !created && group.Count > s.keepNotices {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM notices WHERE group_id = ? AND id NOT IN (
+				SELECT id FROM notices WHERE group_id = ? ORDER BY id DESC LIMIT ?
+			)
+		`, group.ID, group.ID, s.keepNotices); err != nil {
+			return IngestResult{}, err
+		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return IngestResult{}, err
-	}
-	if (created || regressed) && !suppressed {
-		s.wakeOutbound()
-	}
-
+	issueJobEnqueued := false
 	if s.filer != nil && app.GitHubRepo != "" && app.GitHubInstallationID != 0 && !suppressed {
 		action := ""
 		if created {
@@ -459,12 +566,22 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 			action = "reopen"
 		}
 		if action != "" {
-			_ = s.enqueueIssueJob(ctx, group.ID, action)
-			_ = s.ProcessIssueJobsOnce(ctx)
-			if refreshed, refreshErr := s.Get(ctx, group.ID); refreshErr == nil {
-				group = refreshed
+			enqueued, err := s.enqueueIssueJobTx(ctx, tx, group.ID, action)
+			if err != nil {
+				return IngestResult{}, err
 			}
+			issueJobEnqueued = enqueued
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return IngestResult{}, err
+	}
+	if (created || regressed) && !suppressed {
+		s.wakeOutbound()
+	}
+	if issueJobEnqueued {
+		s.wakeIssues()
 	}
 
 	group.Status = group.ComputeStatus()
@@ -479,7 +596,8 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 	query := `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		       claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json
 		FROM error_groups
 	`
 	args := []any{}
@@ -500,9 +618,10 @@ func (s *Store) List(ctx context.Context, app string, unacked bool) ([]Group, er
 		return nil, err
 	}
 	defer rows.Close()
+	now := s.now().UTC()
 	var groups []Group
 	for rows.Next() {
-		group, err := scanGroup(rows)
+		group, err := scanGroup(rows, now)
 		if err != nil {
 			return nil, err
 		}
@@ -520,10 +639,11 @@ func (s *Store) Get(ctx context.Context, id int64) (Group, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
 		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
+		       acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		       claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json
 		FROM error_groups WHERE id = ?
 	`, id)
-	group, err := scanGroup(row)
+	group, err := scanGroup(row, s.now().UTC())
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, ErrNotFound
 	}
@@ -567,7 +687,11 @@ func (s *Store) Notices(ctx context.Context, id int64, limit int) ([]Notice, err
 // httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET acked_at_unix = ? WHERE id = ?`, now, id)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET acked_at_unix = ?, claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
+		WHERE id = ?
+	`, now, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -583,7 +707,11 @@ func (s *Store) Ack(ctx context.Context, id int64) (Group, error) {
 // httpserver Store interface so a handler cannot be wired to it.
 func (s *Store) Suppress(ctx context.Context, id int64) (Group, error) {
 	now := s.now().UTC().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE error_groups SET suppressed_at_unix = ? WHERE id = ?`, now, id)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET suppressed_at_unix = ?, claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
+		WHERE id = ?
+	`, now, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -609,22 +737,83 @@ func (s *Store) Unsuppress(ctx context.Context, id int64) (Group, error) {
 	return s.Get(ctx, id)
 }
 
+// Resolve is tenant-unsafe: it marks any error group resolved store-only
+// (setting resolved_at_unix and preserving or setting acked_at_unix) without
+// making outbound GitHub API calls. HTTP handlers must use ResolveForUser.
+func (s *Store) Resolve(ctx context.Context, id int64) (Group, error) {
+	now := s.now().UTC().Unix()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = ?, acked_at_unix = COALESCE(acked_at_unix, ?),
+		    claimed_by = '', claimed_at_unix = NULL, lease_expires_at_unix = NULL, claim_note = ''
+		WHERE id = ?
+	`, now, now, id)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+// Reopen is tenant-unsafe: it reopens any error group store-only by clearing
+// both resolved_at_unix and acked_at_unix so its status returns to open.
+// HTTP handlers must use ReopenForUser.
+func (s *Store) Reopen(ctx context.Context, id int64) (Group, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE error_groups
+		SET resolved_at_unix = NULL, acked_at_unix = NULL
+		WHERE id = ?
+	`, id)
+	if err != nil {
+		return Group{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Group{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanGroup(row rowScanner) (Group, error) {
+func buildActiveClaim(now time.Time, claimedBy string, claimedAtUnix, leaseExpiresUnix sql.NullInt64, claimNote string) *Claim {
+	if !leaseExpiresUnix.Valid || leaseExpiresUnix.Int64 <= now.Unix() || claimedBy == "" {
+		return nil
+	}
+	var claimedAt time.Time
+	if claimedAtUnix.Valid {
+		claimedAt = time.Unix(claimedAtUnix.Int64, 0).UTC()
+	}
+	return &Claim{
+		Agent:     claimedBy,
+		ClaimedAt: claimedAt,
+		ExpiresAt: time.Unix(leaseExpiresUnix.Int64, 0).UTC(),
+		Note:      claimNote,
+	}
+}
+
+func scanGroup(row rowScanner, now time.Time) (Group, error) {
 	var (
-		group          Group
-		ackedUnix      sql.NullInt64
-		suppressedUnix sql.NullInt64
-		resolvedUnix   sql.NullInt64
-		sampleRaw      string
+		group            Group
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		claimedBy        string
+		claimedAtUnix    sql.NullInt64
+		leaseExpiresUnix sql.NullInt64
+		claimNote        string
+		sampleRaw        string
 	)
 	err := row.Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
 		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
-		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
+		&ackedUnix, &suppressedUnix, &resolvedUnix,
+		&claimedBy, &claimedAtUnix, &leaseExpiresUnix, &claimNote, &sampleRaw,
 	)
 	if err != nil {
 		return Group{}, err
@@ -642,6 +831,44 @@ func scanGroup(row rowScanner) (Group, error) {
 		t := time.Unix(resolvedUnix.Int64, 0).UTC()
 		group.ResolvedAt = &t
 	}
+	group.Claim = buildActiveClaim(now, claimedBy, claimedAtUnix, leaseExpiresUnix, claimNote)
+	group.Status = group.ComputeStatus()
+	return group, nil
+}
+
+func scanGroupCompact(row rowScanner, now time.Time) (Group, error) {
+	var (
+		group            Group
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		claimedBy        string
+		claimedAtUnix    sql.NullInt64
+		leaseExpiresUnix sql.NullInt64
+		claimNote        string
+	)
+	err := row.Scan(
+		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
+		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
+		&ackedUnix, &suppressedUnix, &resolvedUnix,
+		&claimedBy, &claimedAtUnix, &leaseExpiresUnix, &claimNote,
+	)
+	if err != nil {
+		return Group{}, err
+	}
+	if ackedUnix.Valid {
+		t := time.Unix(ackedUnix.Int64, 0).UTC()
+		group.AckedAt = &t
+	}
+	if suppressedUnix.Valid {
+		t := time.Unix(suppressedUnix.Int64, 0).UTC()
+		group.SuppressedAt = &t
+	}
+	if resolvedUnix.Valid {
+		t := time.Unix(resolvedUnix.Int64, 0).UTC()
+		group.ResolvedAt = &t
+	}
+	group.Claim = buildActiveClaim(now, claimedBy, claimedAtUnix, leaseExpiresUnix, claimNote)
 	group.Status = group.ComputeStatus()
 	return group, nil
 }
@@ -669,6 +896,65 @@ func boolToInt(v bool) int {
 	return 0
 }
 
+func parseSeenRevisions(raw, fallbackLastRev string) []string {
+	var revs []string
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &revs)
+	}
+	clean := make([]string, 0, len(revs)+1)
+	seen := make(map[string]struct{}, len(revs)+1)
+	for _, r := range revs {
+		if r == "" {
+			continue
+		}
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		clean = append(clean, r)
+	}
+	if fallbackLastRev != "" {
+		if _, dup := seen[fallbackLastRev]; !dup {
+			clean = append(clean, fallbackLastRev)
+		}
+	}
+	if len(clean) > maxSeenRevisions {
+		clean = clean[len(clean)-maxSeenRevisions:]
+	}
+	return clean
+}
+
+// recordSeenRevision tracks up to max recent non-empty revisions in recency
+// order and reports whether rev was already present in the ring.
+func recordSeenRevision(existing []string, rev string, max int) ([]string, bool) {
+	if rev == "" {
+		if existing == nil {
+			return []string{}, false
+		}
+		return existing, false
+	}
+	idx := -1
+	for i, v := range existing {
+		if v == rev {
+			idx = i
+			break
+		}
+	}
+	out := make([]string, 0, len(existing)+1)
+	if idx >= 0 {
+		out = append(out, existing[:idx]...)
+		out = append(out, existing[idx+1:]...)
+		out = append(out, rev)
+		return out, true
+	}
+	out = append(out, existing...)
+	out = append(out, rev)
+	if max > 0 && len(out) > max {
+		out = out[len(out)-max:]
+	}
+	return out, false
+}
+
 func issueTitle(group Group) string {
 	title := fmt.Sprintf("[%s] %s in %s", group.Env, group.Class, group.Location)
 	// The title is a single GitHub issue line: flatten newlines and cap
@@ -678,6 +964,13 @@ func issueTitle(group Group) string {
 		title = string(runes[:256])
 	}
 	return title
+}
+
+// FenceFor returns a fenced-code-block fence one run longer than any backtick
+// run in the value (at least three backticks), so the value cannot break out of
+// its fenced block.
+func FenceFor(value string) string {
+	return fenceFor(value)
 }
 
 // fenceFor returns a fenced-code-block fence one run longer than any

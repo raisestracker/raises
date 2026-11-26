@@ -5,7 +5,9 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/raisestracker/raises/internal/inbox"
 )
@@ -146,5 +148,108 @@ func TestLoadConfigEnablesIndexNowOnProductionHost(t *testing.T) {
 	}
 	if !conf.indexNowEnabled {
 		t.Fatal("expected indexNowEnabled=true for https://raises.dev")
+	}
+}
+
+type slowShutdownFiler struct {
+	started chan struct{}
+	delay   time.Duration
+}
+
+func (f *slowShutdownFiler) FindByMarker(context.Context, int64, string, string, time.Time) (int, string, bool, error) {
+	select {
+	case f.started <- struct{}{}:
+	default:
+	}
+	time.Sleep(f.delay)
+	return 0, "", false, nil
+}
+
+func (f *slowShutdownFiler) Open(context.Context, int64, string, string, string) (int, string, error) {
+	return 1, "https://github.com/example/widget/issues/1", nil
+}
+
+func (f *slowShutdownFiler) Reopen(context.Context, int64, string, int) error { return nil }
+
+func TestDrainWorkersWaitsBeforeStoreClose(t *testing.T) {
+	filer := &slowShutdownFiler{started: make(chan struct{}, 1), delay: 120 * time.Millisecond}
+	store, err := inbox.Open(filepath.Join(t.TempDir(), "drain.db"), nil, filer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertApp(context.Background(), "widget", "tok", "example/widget"); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var workerErrs []error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		store.RunIssueWorker(runCtx, func(err error) {
+			errMu.Lock()
+			workerErrs = append(workerErrs, err)
+			errMu.Unlock()
+		})
+	}()
+
+	// Trigger an in-flight worker job (use a separate goroutine because Ingest
+	// may still run ProcessIssueJobsOnce synchronously before E05).
+	ingestDone := make(chan error, 1)
+	go func() {
+		_, err := store.Ingest(context.Background(), "tok", inbox.Notice{
+			Class:     "RuntimeError",
+			Message:   "drain test",
+			Backtrace: []string{"app/models/drain.rb:1"},
+		})
+		ingestDone <- err
+	}()
+
+	select {
+	case <-filer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for filer call to start")
+	}
+
+	// Simulate SIGTERM cancellation mid-flight, then drain before closing store.
+	cancel()
+	if !drainWorkers(&wg, 2*time.Second) {
+		t.Fatal("drainWorkers timed out before worker exited")
+	}
+	if err := <-ingestDone; err != nil {
+		t.Fatalf("ingest error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("store close: %v", err)
+	}
+
+	errMu.Lock()
+	defer errMu.Unlock()
+	for _, werr := range workerErrs {
+		if strings.Contains(strings.ToLower(werr.Error()), "database is closed") {
+			t.Fatalf("worker hit database-is-closed error during drain: %v", werr)
+		}
+	}
+}
+
+func TestDrainWorkersRespectsBoundedTimeout(t *testing.T) {
+	var wg sync.WaitGroup
+	release := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-release
+	}()
+	defer close(release)
+
+	start := time.Now()
+	if drainWorkers(&wg, 40*time.Millisecond) {
+		t.Fatal("expected drainWorkers to return false when worker blocks past timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("drainWorkers took too long: %s", elapsed)
 	}
 }

@@ -137,18 +137,23 @@ func randomID(prefix string, bytes int) (string, error) {
 
 func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 	columns := map[string]string{
-		"apps.slug":                       "ALTER TABLE apps ADD COLUMN slug TEXT NOT NULL DEFAULT ''",
-		"apps.project_id":                 "ALTER TABLE apps ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
-		"apps.display_name":               "ALTER TABLE apps ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
-		"apps.owner_user_id":              "ALTER TABLE apps ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
-		"apps.github_installation_id":     "ALTER TABLE apps ADD COLUMN github_installation_id INTEGER NOT NULL DEFAULT 0",
-		"apps.github_repository_id":       "ALTER TABLE apps ADD COLUMN github_repository_id INTEGER NOT NULL DEFAULT 0",
-		"apps.archived_at_unix":           "ALTER TABLE apps ADD COLUMN archived_at_unix INTEGER",
-		"apps.created_at_unix":            "ALTER TABLE apps ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0",
-		"apps.updated_at_unix":            "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
-		"error_groups.project_id":         "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
-		"error_groups.suppressed_at_unix": "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
-		"error_groups.resolved_at_unix":   "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
+		"apps.slug":                          "ALTER TABLE apps ADD COLUMN slug TEXT NOT NULL DEFAULT ''",
+		"apps.project_id":                    "ALTER TABLE apps ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+		"apps.display_name":                  "ALTER TABLE apps ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+		"apps.owner_user_id":                 "ALTER TABLE apps ADD COLUMN owner_user_id INTEGER NOT NULL DEFAULT 0",
+		"apps.github_installation_id":        "ALTER TABLE apps ADD COLUMN github_installation_id INTEGER NOT NULL DEFAULT 0",
+		"apps.github_repository_id":          "ALTER TABLE apps ADD COLUMN github_repository_id INTEGER NOT NULL DEFAULT 0",
+		"apps.archived_at_unix":              "ALTER TABLE apps ADD COLUMN archived_at_unix INTEGER",
+		"apps.created_at_unix":               "ALTER TABLE apps ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0",
+		"apps.updated_at_unix":               "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
+		"error_groups.project_id":            "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+		"error_groups.seen_revisions_json":   "ALTER TABLE error_groups ADD COLUMN seen_revisions_json TEXT NOT NULL DEFAULT '[]'",
+		"error_groups.suppressed_at_unix":    "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
+		"error_groups.resolved_at_unix":      "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
+		"error_groups.claimed_by":            "ALTER TABLE error_groups ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''",
+		"error_groups.claimed_at_unix":       "ALTER TABLE error_groups ADD COLUMN claimed_at_unix INTEGER",
+		"error_groups.lease_expires_at_unix": "ALTER TABLE error_groups ADD COLUMN lease_expires_at_unix INTEGER",
+		"error_groups.claim_note":            "ALTER TABLE error_groups ADD COLUMN claim_note TEXT NOT NULL DEFAULT ''",
 	}
 	for key, statement := range columns {
 		parts := strings.SplitN(key, ".", 2)
@@ -186,8 +191,19 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_project_id ON apps(project_id) WHERE project_id != ''`); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_owner_slug ON apps(owner_user_id,slug) WHERE owner_user_id != 0`)
-	return err
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_owner_slug ON apps(owner_user_id,slug) WHERE owner_user_id != 0`); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_apps_project_lookup ON apps(project_id, archived_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_apps_owner_archived_project ON apps(owner_user_id, archived_at_unix, project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_apps_github_repo_install ON apps(github_repository_id, github_installation_id, project_id)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ensureTenantIsolatedGroups re-keys error grouping from the per-owner slug
@@ -227,9 +243,14 @@ func (s *Store) ensureTenantIsolatedGroups(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_error_groups_project_env_fp ON error_groups(project_id, env, fingerprint) WHERE project_id != ''`)
-	if err != nil {
-		return fmt.Errorf("index error groups by project: %w", err)
+	for _, stmt := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_error_groups_project_env_fp ON error_groups(project_id, env, fingerprint) WHERE project_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_error_groups_project_last_seen ON error_groups(project_id, last_seen_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_error_groups_issue ON error_groups(github_issue_number, project_id)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("index error groups by project: %w", err)
+		}
 	}
 	return nil
 }
@@ -311,14 +332,21 @@ func sameStringSet(a, b []string) bool {
 // and the old key would keep rejecting one tenant's insert into another
 // tenant's slug. Row ids and every column value carry over untouched.
 func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
+	// SQLite table-rebuild migration requires foreign_keys OFF outside the tx
+	// because notices/issue_jobs reference error_groups(id).
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() { _, _ = s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	columns := `id, project_id, app_name, env, fingerprint, class, location, message, count,
-		first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
-		acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json`
+		first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, github_issue_number, github_issue_url,
+		acked_at_unix, suppressed_at_unix, resolved_at_unix,
+		claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json`
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE error_groups_new (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		project_id TEXT NOT NULL DEFAULT '',
@@ -332,11 +360,16 @@ func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
 		first_seen_unix INTEGER NOT NULL,
 		last_seen_unix INTEGER NOT NULL,
 		last_revision TEXT NOT NULL DEFAULT '',
+		seen_revisions_json TEXT NOT NULL DEFAULT '[]',
 		github_issue_number INTEGER NOT NULL DEFAULT 0,
 		github_issue_url TEXT NOT NULL DEFAULT '',
 		acked_at_unix INTEGER,
 		suppressed_at_unix INTEGER,
 		resolved_at_unix INTEGER,
+		claimed_by TEXT NOT NULL DEFAULT '',
+		claimed_at_unix INTEGER,
+		lease_expires_at_unix INTEGER,
+		claim_note TEXT NOT NULL DEFAULT '',
 		sample_json TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("stage tenant-scoped groups: %w", err)
@@ -459,8 +492,10 @@ func (s *Store) initializeControlPlane(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at_unix)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_keys_hash ON agent_keys(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_keys_user_created ON agent_keys(user_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_tokens_hash ON project_tokens(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_issue_jobs_pending ON issue_jobs(state, next_attempt_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_issue_jobs_group_state ON issue_jobs(group_id, state, created_at_unix)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -588,17 +623,30 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Durati
 }
 
 func (s *Store) SessionByToken(ctx context.Context, token string) (Session, error) {
-	var userID, expires int64
-	var csrf string
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, csrf_token, expires_at_unix FROM sessions WHERE token_hash = ? AND expires_at_unix > ?`, HashToken(token), s.now().UTC().Unix()).Scan(&userID, &csrf, &expires)
+	var (
+		u                User
+		csrf             string
+		expires          int64
+		created, updated int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.id, u.github_id, u.login, u.name, u.avatar_url, u.created_at_unix, u.updated_at_unix,
+		       s.csrf_token, s.expires_at_unix
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = ? AND s.expires_at_unix > ?
+	`, HashToken(token), s.now().UTC().Unix()).Scan(
+		&u.ID, &u.GitHubID, &u.Login, &u.Name, &u.AvatarURL, &created, &updated,
+		&csrf, &expires,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrUnauthorized
 	}
 	if err != nil {
 		return Session{}, err
 	}
-	u, err := s.userByID(ctx, userID)
-	return Session{User: u, CSRFToken: csrf, ExpiresAt: time.Unix(expires, 0).UTC()}, err
+	u.CreatedAt, u.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
+	return Session{User: u, CSRFToken: csrf, ExpiresAt: time.Unix(expires, 0).UTC()}, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
@@ -748,14 +796,19 @@ func (s *Store) createAccountScopedKey(ctx context.Context, userID int64, name s
 func (s *Store) AuthenticateAccountKey(ctx context.Context, token string) (int64, string, error) {
 	var userID int64
 	var keyID string
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, id FROM agent_keys WHERE token_hash = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID, &keyID)
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, id, last_used_at_unix FROM agent_keys WHERE token_hash = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, tokenHash).Scan(&userID, &keyID, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", ErrUnauthorized
 	}
 	if err != nil {
 		return 0, "", err
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	now := s.now().UTC().Unix()
+	if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+		_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+	}
 	return userID, keyID, nil
 }
 
@@ -809,14 +862,19 @@ func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, nam
 // account key, so it needs an explicit product decision first.
 func (s *Store) AuthenticateAgent(ctx context.Context, token string) (int64, error) {
 	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID)
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, last_used_at_unix FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, tokenHash).Scan(&userID, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrUnauthorized
 	}
 	if err != nil {
 		return 0, err
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	now := s.now().UTC().Unix()
+	if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+		_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+	}
 	return userID, nil
 }
 
@@ -947,6 +1005,93 @@ func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug stri
 		return Project{}, err
 	}
 	return s.GetProject(ctx, userID, id)
+}
+
+// SlugFromName derives a project slug from a display name: lowercase ASCII
+// letters and digits joined by single hyphens, trimmed to the slug limit.
+func SlugFromName(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			dash = false
+			b.WriteRune(r)
+		default:
+			dash = true
+		}
+		if b.Len() >= maxProjectSlugLength {
+			break
+		}
+	}
+	out := b.String()
+	if len(out) > maxProjectSlugLength {
+		out = out[:maxProjectSlugLength]
+	}
+	return strings.Trim(out, "-")
+}
+
+// CreateProjectWithToken creates a project and its first ingestion token in
+// one SQLite transaction under quotaMu, so a failure at any step leaves no
+// orphan project and concurrent creators cannot exceed the project limit.
+// The plaintext token is returned once; only its hash is stored.
+func (s *Store) CreateProjectWithToken(ctx context.Context, userID int64, name, slug string) (Project, string, ProjectToken, error) {
+	name = strings.TrimSpace(name)
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		slug = SlugFromName(name)
+	}
+	if name == "" || len(name) > maxProjectNameLength || len(slug) > maxProjectSlugLength || !slugPattern.MatchString(slug) {
+		return Project{}, "", ProjectToken{}, fmt.Errorf("valid name and slug are required")
+	}
+	projectID, err := randomID("prj_", 12)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	secret, err := randomID("", 32)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	tokenID, err := randomID("ptk_", 12)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	prefix := secret[:8]
+	token := "raises_ingest_" + prefix + "_" + secret[8:]
+
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if s.projectLimitReached(userID, count) {
+		return Project{}, "", ProjectToken{}, fmt.Errorf("project limit reached")
+	}
+	now := s.now().UTC()
+	internalName := fmt.Sprintf("%d:%s", userID, slug)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO apps(name,slug,token_hash,github_repo,project_id,display_name,owner_user_id,created_at_unix,updated_at_unix) VALUES(?,?, '', '', ?, ?, ?, ?, ?)`, internalName, slug, projectID, name, userID, now.Unix(), now.Unix()); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO project_tokens(id,project_id,prefix,token_hash,created_at_unix) VALUES(?,?,?,?,?)`, tokenID, projectID, prefix, HashToken(token), now.Unix()); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	project, err := scanProject(tx.QueryRowContext(ctx, `SELECT project_id,slug,display_name,github_repo,github_installation_id,github_repository_id,archived_at_unix,created_at_unix,updated_at_unix FROM apps WHERE owner_user_id=? AND project_id=?`, userID, projectID))
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	return project, token, ProjectToken{ID: tokenID, Prefix: prefix, CreatedAt: now}, nil
 }
 
 func (s *Store) UpdateProject(ctx context.Context, userID int64, id, name string) (Project, error) {

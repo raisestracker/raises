@@ -21,6 +21,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.preAuthLimited(r) {
+		tooManyRequests(w)
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 		Name  string `json:"name"`
@@ -30,6 +34,10 @@ func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	token, key, err := s.store.ExchangeBootstrapToken(r.Context(), req.Token, req.Name)
 	if errors.Is(err, inbox.ErrUnauthorized) {
+		if s.failedAuthLimited(r) {
+			tooManyRequests(w)
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired bootstrap token"})
 		return
 	}
@@ -53,7 +61,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if projects == nil {
 		projects = []inbox.Project{}
 	}
-	writeJSON(w, http.StatusOK, projects)
+	writeJSONWithETag(w, r, http.StatusOK, projects)
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -173,10 +181,11 @@ func (s *Server) bindGitHubRepository(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RepositoryID int64 `json:"repository_id"`
 	}
-	if !decodeJSON(w, r, &req) || req.RepositoryID < 1 {
-		if req.RepositoryID < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repository_id is required"})
-		}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.RepositoryID < 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repository_id is required"})
 		return
 	}
 	project, err := s.store.BindProjectRepository(r.Context(), userID, r.PathValue("id"), req.RepositoryID)

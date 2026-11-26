@@ -171,6 +171,8 @@ func (s *Store) initializeEvents(ctx context.Context) error {
 			UNIQUE(event_id, destination_kind, endpoint_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_pending ON outbound_deliveries(state, next_attempt_at_unix)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_owner_kind ON outbound_deliveries(owner_user_id, destination_kind, state, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_events_created ON outbound_events(created_at_unix)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -200,6 +202,10 @@ func (s *Store) CreateEvent(ctx context.Context, token string, input EventInput)
 	if err != nil {
 		return Event{}, err
 	}
+	return s.CreateEventForApp(ctx, app, input)
+}
+
+func (s *Store) CreateEventForApp(ctx context.Context, app App, input EventInput) (Event, error) {
 	input.Message = strings.TrimSpace(input.Message)
 	input.Level = strings.ToLower(strings.TrimSpace(input.Level))
 	if input.Level == "" {
@@ -261,6 +267,13 @@ func (s *Store) CreateEvent(ctx context.Context, token string, input EventInput)
 func (s *Store) pruneEventsTx(ctx context.Context, tx *sql.Tx, ownerID int64, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE owner_user_id=? AND created_at_unix<?`, ownerID, now.Add(-eventRetention).Unix()); err != nil {
 		return err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE owner_user_id=?`, ownerID).Scan(&count); err != nil {
+		return err
+	}
+	if count <= MaxEventsPerAccount {
+		return nil
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM events WHERE owner_user_id=? AND id NOT IN (SELECT id FROM events WHERE owner_user_id=? ORDER BY created_at_unix DESC,id DESC LIMIT ?)`, ownerID, ownerID, MaxEventsPerAccount)
 	return err
