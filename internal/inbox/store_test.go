@@ -341,3 +341,69 @@ func testStore(t *testing.T) (*Store, *fakeFiler) {
 	t.Cleanup(func() { _ = store.Close() })
 	return store, filer
 }
+
+func TestSQLiteDSNPragmasOnFileAndMemory(t *testing.T) {
+	ctx := context.Background()
+
+	// File-backed store: verify all DSN pragmas apply and survive connection recycling.
+	fileStore, err := Open(filepath.Join(t.TempDir(), "pragmas.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileStore.Close()
+	// Force connection recycling so a brand-new connection is opened from the pool.
+	fileStore.db.SetMaxIdleConns(0)
+	fileStore.db.SetMaxIdleConns(1)
+
+	var journalMode string
+	var busyTimeout, synchronous, foreignKeys, journalSizeLimit int64
+	if err := fileStore.db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileStore.db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileStore.db.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileStore.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileStore.db.QueryRowContext(ctx, `PRAGMA journal_size_limit`).Scan(&journalSizeLimit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ToLower(journalMode) != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", busyTimeout)
+	}
+	if synchronous != 1 {
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", synchronous)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+	}
+	if journalSizeLimit != 67108864 {
+		t.Fatalf("journal_size_limit = %d, want 67108864", journalSizeLimit)
+	}
+
+	// :memory: safe fallback: must initialize cleanly and enforce busy_timeout, synchronous, foreign_keys.
+	memStore, err := Open(":memory:", nil, nil)
+	if err != nil {
+		t.Fatalf("open :memory:: %v", err)
+	}
+	defer memStore.Close()
+	if err := memStore.db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if err := memStore.db.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if err := memStore.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout != 5000 || synchronous != 1 || foreignKeys != 1 {
+		t.Fatalf(":memory: pragmas busy=%d sync=%d fk=%d", busyTimeout, synchronous, foreignKeys)
+	}
+}

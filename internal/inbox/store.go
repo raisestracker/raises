@@ -130,11 +130,31 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func sqliteDSN(path string) string {
+	const (
+		memParams  = "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+		fileParams = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=journal_size_limit(67108864)&_txlock=immediate"
+	)
+	trimmed := strings.TrimSpace(path)
+	isMem := trimmed == ":memory:" || strings.HasPrefix(trimmed, "file::memory:") || strings.Contains(trimmed, "mode=memory")
+	params := fileParams
+	if isMem {
+		params = memParams
+		if trimmed == ":memory:" {
+			return "file::memory:?" + params
+		}
+	}
+	if strings.Contains(trimmed, "?") {
+		return trimmed + "&" + params
+	}
+	return trimmed + "?" + params
+}
+
 func Open(path string, now func() time.Time, filer IssueFiler) (*Store, error) {
 	if now == nil {
 		now = time.Now
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -157,8 +177,6 @@ func (s *Store) Ping(ctx context.Context) error {
 
 func (s *Store) initialize(ctx context.Context) error {
 	statements := []string{
-		`PRAGMA journal_mode = WAL`,
-		`PRAGMA busy_timeout = 5000`,
 		`CREATE TABLE IF NOT EXISTS apps (
 			name TEXT PRIMARY KEY,
 			slug TEXT NOT NULL DEFAULT '',

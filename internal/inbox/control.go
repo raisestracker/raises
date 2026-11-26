@@ -311,6 +311,12 @@ func sameStringSet(a, b []string) bool {
 // and the old key would keep rejecting one tenant's insert into another
 // tenant's slug. Row ids and every column value carry over untouched.
 func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
+	// SQLite table-rebuild migration requires foreign_keys OFF outside the tx
+	// because notices/issue_jobs reference error_groups(id).
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() { _, _ = s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
