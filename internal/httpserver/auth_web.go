@@ -50,13 +50,60 @@ type settingsInstallation struct {
 	ManageURL    string
 }
 
+// errorDetailData backs the zero-JS /errors/{id} debugging inspector. Every
+// string reaches the page through html/template auto-escaping; the page never
+// marks untrusted exception data as template.HTML.
 type errorDetailData struct {
-	Nav       navData
-	User      inbox.User
-	CSRF      string
-	StylePath string
-	Group     inbox.Group
-	Notices   []inbox.Notice
+	Nav          navData
+	User         inbox.User
+	CSRF         string
+	StylePath    string
+	AppJSPath    string
+	Group        inbox.GroupSummary
+	Project      *inbox.Project
+	Notices      []inbox.Notice
+	InAppFrames  []inbox.Frame
+	VendorFrames []inbox.Frame
+	HasLatest    bool
+	Handled      bool
+	RequestJSON  string
+	ContextJSON  string
+	Handoff      string
+}
+
+// maxInspectorFrames bounds how many frames the inspector renders per fold so
+// a pathological 10K-frame backtrace cannot bloat the page.
+const maxInspectorFrames = 200
+
+// splitInspectorFrames classifies a raw backtrace with the shared
+// inbox.ClassifyFrame so the browser, /context and Markdown agree on what is
+// in-app versus framework/library code.
+func splitInspectorFrames(backtrace []string) (inApp, vendor []inbox.Frame) {
+	for _, raw := range backtrace {
+		f := inbox.ClassifyFrame(raw)
+		if f.Raw == "" {
+			continue
+		}
+		if f.InApp {
+			if len(inApp) < maxInspectorFrames {
+				inApp = append(inApp, f)
+			}
+		} else if len(vendor) < maxInspectorFrames {
+			vendor = append(vendor, f)
+		}
+	}
+	return inApp, vendor
+}
+
+func indentedJSON(v map[string]any) string {
+	if len(v) == 0 {
+		return ""
+	}
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func (s *Server) beginGitHubAuth(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +424,7 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	group, err := s.store.GetForUser(r.Context(), session.User.ID, id)
+	rc, err := s.store.RemediationContextForUser(r.Context(), session.User.ID, id, 0)
 	if errors.Is(err, inbox.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -391,7 +438,32 @@ func (s *Server) errorDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load notices", 500)
 		return
 	}
-	data := errorDetailData{Nav: s.nav(session, "dashboard"), User: session.User, CSRF: session.CSRFToken, StylePath: s.stylePath, Group: group, Notices: notices}
+	s.populateGroupSummaryURL(&rc.Group)
+	data := errorDetailData{
+		Nav:       s.nav(session, "dashboard"),
+		User:      session.User,
+		CSRF:      session.CSRFToken,
+		StylePath: s.stylePath,
+		AppJSPath: s.appJSPath,
+		Group:     rc.Group,
+		Notices:   notices,
+		Handoff:   RenderRemediationMarkdown(rc),
+	}
+	if project, err := s.store.ProjectBySlug(r.Context(), session.User.ID, rc.Group.ProjectID); err == nil {
+		data.Project = &project
+	}
+	if len(notices) > 0 {
+		latest := notices[0]
+		data.HasLatest = true
+		data.Handled = latest.Handled
+		data.InAppFrames, data.VendorFrames = splitInspectorFrames(latest.Backtrace)
+		data.RequestJSON = indentedJSON(latest.Request)
+		data.ContextJSON = indentedJSON(latest.Context)
+	} else {
+		data.InAppFrames, data.VendorFrames = rc.Stacktrace.InAppFrames, rc.Stacktrace.VendorFrames
+		data.RequestJSON = indentedJSON(rc.LatestRequest)
+		data.ContextJSON = indentedJSON(rc.LatestContext)
+	}
 	s.renderPage(w, "error.html", data)
 }
 

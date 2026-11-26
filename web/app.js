@@ -128,6 +128,19 @@
     });
   }
 
+  // Progressive enhancement: any server-rendered button carrying
+  // data-copy-target="<field id>" copies that readonly field. The button is
+  // rendered hidden so no-JS readers never see a dead control.
+  for (const button of document.querySelectorAll("[data-copy-target]")) {
+    const field = document.getElementById(button.dataset.copyTarget);
+    if (!field) continue;
+    const status = button.dataset.copyStatus ? document.getElementById(button.dataset.copyStatus) : null;
+    button.hidden = false;
+    button.addEventListener("click", async () => {
+      await copyField(field, status, "Copied to clipboard", "Selected. Press Ctrl+C or Command+C to copy.");
+    });
+  }
+
   // A plain form POST still renders the reveal server-side on a full
   // reload: bring a freshly revealed secret into view instead of
   // leaving the reader at the top of the page.

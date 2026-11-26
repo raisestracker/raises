@@ -23,7 +23,7 @@
         <div class="min-w-0">
           <form method="post" action="/settings/bootstrap" id="bootstrap-form">
             <input type="hidden" name="csrf" value="{{.CSRF}}">
-            <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light disabled:cursor-wait disabled:opacity-60" type="submit">Create bootstrap prompt</button>
+            <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby-dark px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-strong disabled:cursor-wait disabled:opacity-60" type="submit">Create bootstrap prompt</button>
             <p class="mt-2 min-h-5 text-[13px] text-ruby-light" id="bootstrap-form-status" role="status" aria-live="polite"></p>
           </form>
           <div class="mt-6" id="bootstrap-result" {{if not .BootstrapPrompt}}hidden{{end}}>
@@ -61,7 +61,7 @@
             <label class="mb-2 block text-sm font-semibold text-ink" for="agent-name">Name this agent</label>
             <div class="flex items-stretch gap-3 max-sm:flex-col">
               <input class="min-w-0 flex-1 rounded-lg border border-line-strong bg-inset px-3.5 py-2.5 text-ink placeholder:text-quiet" id="agent-name" name="name" placeholder="e.g. Claude Code (plonkboard)" maxlength="80" aria-describedby="agent-name-hint" required>
-              <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light disabled:cursor-wait disabled:opacity-60 max-sm:w-full" type="submit">Create key</button>
+              <button class="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-ruby-dark px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-strong disabled:cursor-wait disabled:opacity-60 max-sm:w-full" type="submit">Create key</button>
             </div>
             <p class="mt-2 text-[13px] leading-5 text-quiet" id="agent-name-hint">Letters, numbers, spaces, hyphens, underscores, periods, apostrophes and parentheses work — up to 80 characters.</p>
             <label class="mt-3 flex cursor-pointer items-start gap-2.5 text-sm leading-6 text-muted" for="agent-account-key">
@@ -145,7 +145,7 @@
           {{else}}
           <div class="rounded-[10px] border border-dashed border-line-strong bg-inset p-6">
             <p class="mb-4 text-muted">Connect the GitHub App, then choose the repositories where Raises may file issues.</p>
-            <a class="inline-flex min-h-11 items-center justify-center rounded-lg bg-ruby px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-light" href="{{.InstallURL}}">Connect GitHub App</a>
+            <a class="inline-flex min-h-11 items-center justify-center rounded-lg bg-ruby-dark px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-ruby-strong" href="{{.InstallURL}}">Connect GitHub App</a>
           </div>
           {{end}}
 
@@ -202,13 +202,7 @@
           </div>
         </div>
       </section>
-      <footer class="mt-10 text-xs text-quiet">
-        <a class="hover:text-muted" href="https://github.com/raisestracker/raises">GitHub</a>
-        <span aria-hidden="true">·</span>
-        <a class="hover:text-muted" href="https://github.com/raisestracker/raises/blob/master/LICENSE">AGPL-3.0</a>
-        <span aria-hidden="true">·</span>
-        <a class="hover:text-muted" href="/changelog.md">What's New</a>
-      </footer>
+      {{template "footer"}}
     </main>
     <script defer src="{{.AppJSPath}}"></script>
   </body>
