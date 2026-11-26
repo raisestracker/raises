@@ -38,6 +38,8 @@
   button,
   a,
   input,
+  select,
+  summary,
   textarea {
     @apply focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-mint;
   }
