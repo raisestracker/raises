@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Error status values. Suppressed groups are known false positives and only
@@ -40,12 +41,85 @@ func (g Group) ComputeStatus() string {
 // empty values fall back to the supplied default.
 func NormalizeStatus(value, fallback string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case StatusOpen, StatusAcknowledged, StatusFixed, StatusAll:
+	case StatusOpen, StatusAcknowledged, StatusFixed, StatusSuppressed, StatusAll:
 		return strings.ToLower(strings.TrimSpace(value))
 	case "acked", "ack":
 		return StatusAcknowledged
 	}
 	return fallback
+}
+
+// Search and sort facets shared by GET /v1/errors and the HTML error lists.
+const (
+	SortLastSeen  = "last_seen"
+	SortCount     = "count"
+	SortFirstSeen = "first_seen"
+
+	// MaxSearchQueryRunes caps the free-text q facet.
+	MaxSearchQueryRunes = 128
+	// MaxEnvFilterRunes caps the env facet.
+	MaxEnvFilterRunes = 80
+)
+
+// sortOrders is the strict allowlist mapping a sort key to a fixed ORDER BY
+// clause. User input never reaches SQL text; unknown keys are rejected by
+// NormalizeSort before a query is built.
+var sortOrders = map[string]string{
+	SortLastSeen:  `g.last_seen_unix DESC, g.id DESC`,
+	SortCount:     `g.count DESC, g.last_seen_unix DESC, g.id DESC`,
+	SortFirstSeen: `g.first_seen_unix DESC, g.id DESC`,
+}
+
+// NormalizeSort returns the allowlisted sort key for value (empty means
+// last_seen) and whether value was acceptable.
+func NormalizeSort(value string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return SortLastSeen, true
+	}
+	if _, ok := sortOrders[v]; ok {
+		return v, true
+	}
+	return SortLastSeen, false
+}
+
+// NormalizeSearchQuery trims q and caps it at MaxSearchQueryRunes runes.
+func NormalizeSearchQuery(q string) string {
+	return capRunes(strings.TrimSpace(q), MaxSearchQueryRunes)
+}
+
+// NormalizeEnvFilter trims env and caps it at MaxEnvFilterRunes runes.
+func NormalizeEnvFilter(env string) string {
+	return capRunes(strings.TrimSpace(env), MaxEnvFilterRunes)
+}
+
+func capRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// escapeLike neutralizes LIKE wildcards so q matches literally under
+// ESCAPE '\'.
+func escapeLike(s string) string { return likeEscaper.Replace(s) }
+
+// searchClause appends the env and q facets. They only filter rows the
+// tenant (owner/project) index already narrowed; q matches class, message
+// or location as a literal, case-insensitive (ASCII) substring.
+func searchClause(opts ListOptions, where string, args []any) (string, []any) {
+	if env := NormalizeEnvFilter(opts.Env); env != "" {
+		where += ` AND g.env = ?`
+		args = append(args, env)
+	}
+	if q := NormalizeSearchQuery(opts.Query); q != "" {
+		pattern := "%" + escapeLike(q) + "%"
+		where += ` AND (g.class LIKE ? ESCAPE '\' OR g.message LIKE ? ESCAPE '\' OR g.location LIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
+	}
+	return where, args
 }
 
 // statusClause returns a SQL condition on error_groups columns prefixed by p.
@@ -57,6 +131,8 @@ func statusClause(status, p string) string {
 		return p + "acked_at_unix IS NOT NULL AND " + p + "resolved_at_unix IS NULL AND " + p + "suppressed_at_unix IS NULL"
 	case StatusFixed:
 		return p + "resolved_at_unix IS NOT NULL AND " + p + "suppressed_at_unix IS NULL"
+	case StatusSuppressed:
+		return p + "suppressed_at_unix IS NOT NULL"
 	default:
 		return ""
 	}
@@ -105,6 +181,9 @@ func (s *Store) ListPageForUserWithOptions(ctx context.Context, userID int64, pr
 		where += ` AND (g.lease_expires_at_unix IS NULL OR g.lease_expires_at_unix <= ?)`
 		args = append(args, now.Unix())
 	}
+	where, args = searchClause(opts, where, args)
+	sortKey, _ := NormalizeSort(opts.Sort)
+	orderBy := sortOrders[sortKey]
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where, args...).Scan(&total); err != nil {
 		return ErrorPage{}, err
@@ -129,7 +208,7 @@ func (s *Store) ListPageForUserWithOptions(ctx context.Context, userID int64, pr
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+cols+`
 		FROM error_groups g JOIN apps a ON a.project_id = g.project_id`+where+`
-		ORDER BY g.last_seen_unix DESC, g.id DESC LIMIT ? OFFSET ?`,
+		ORDER BY `+orderBy+` LIMIT ? OFFSET ?`,
 		append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
 		return ErrorPage{}, err

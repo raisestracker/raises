@@ -68,6 +68,12 @@ type Claim struct {
 type ListOptions struct {
 	Compact        bool
 	ExcludeClaimed bool
+	// Query, Env and Sort are the paged-list search facets: Query is a
+	// literal (LIKE-escaped) substring of class, message or location, Env an
+	// exact environment, Sort one of last_seen, count or first_seen.
+	Query string
+	Env   string
+	Sort  string
 }
 
 type Group struct {

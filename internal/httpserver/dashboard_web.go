@@ -279,15 +279,44 @@ type projectPageData struct {
 	Prev      string
 	Next      string
 	Empty     string
+	Base      string
+	Status    string
+	Search    listSearch
+	Sorts     []sortOption
+	Searching bool
+	ClearURL  string
 }
 
-func pageURL(base, status string, page int) string {
+// listSearch is the URL-backed search state of an HTML error list. Every link
+// the page renders (status filters, pagination) carries it forward.
+type listSearch struct {
+	Query string
+	Env   string
+	Sort  string
+}
+
+type sortOption struct {
+	Value    string
+	Label    string
+	Selected bool
+}
+
+func listURL(base, status string, page int, search listSearch) string {
 	q := url.Values{}
 	if status != inbox.StatusOpen {
 		q.Set("status", status)
 	}
 	if page > 1 {
 		q.Set("page", strconv.Itoa(page))
+	}
+	if search.Query != "" {
+		q.Set("q", search.Query)
+	}
+	if search.Env != "" {
+		q.Set("env", search.Env)
+	}
+	if search.Sort != "" && search.Sort != inbox.SortLastSeen {
+		q.Set("sort", search.Sort)
 	}
 	if len(q) == 0 {
 		return base
@@ -321,15 +350,19 @@ func (s *Server) allErrorsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderErrorList(w http.ResponseWriter, r *http.Request, session inbox.Session, project *inbox.Project) {
-	status := inbox.NormalizeStatus(r.URL.Query().Get("status"), inbox.StatusOpen)
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	query := r.URL.Query()
+	status := inbox.NormalizeStatus(query.Get("status"), inbox.StatusOpen)
+	page, _ := strconv.Atoi(query.Get("page"))
+	sortKey, _ := inbox.NormalizeSort(query.Get("sort")) // an unknown sort falls back to last_seen
+	search := listSearch{Query: inbox.NormalizeSearchQuery(query.Get("q")), Env: inbox.NormalizeEnvFilter(query.Get("env")), Sort: sortKey}
 	projectKey, base, title := "", "/errors", "All errors"
 	active := "errors"
 	if project != nil {
 		projectKey, base, title = project.ID, "/projects/"+url.PathEscape(project.Slug), project.Name
 		active = "dashboard"
 	}
-	result, err := s.store.ListPageForUserCompact(r.Context(), session.User.ID, projectKey, status, page, inbox.DefaultPageSize, true)
+	opts := inbox.ListOptions{Compact: true, Query: search.Query, Env: search.Env, Sort: search.Sort}
+	result, err := s.store.ListPageForUserWithOptions(r.Context(), session.User.ID, projectKey, status, page, inbox.DefaultPageSize, opts)
 	if err != nil {
 		http.Error(w, "could not load errors", 500)
 		return
@@ -344,27 +377,35 @@ func (s *Server) renderErrorList(w http.ResponseWriter, r *http.Request, session
 		http.Error(w, "could not load counts", 500)
 		return
 	}
-	data := projectPageData{Nav: s.nav(session, active), StylePath: s.stylePath, Title: title, Project: project, ShowApp: project == nil, Open: open, Fixed: fixed, Page: result}
-	for _, f := range []struct{ label, value string }{{"Open", inbox.StatusOpen}, {"Acknowledged", inbox.StatusAcknowledged}, {"Fixed", inbox.StatusFixed}, {"All", inbox.StatusAll}} {
-		data.Filters = append(data.Filters, filterLink{Label: f.label, URL: pageURL(base, f.value, 1), Active: f.value == status})
+	data := projectPageData{Nav: s.nav(session, active), StylePath: s.stylePath, Title: title, Project: project, ShowApp: project == nil, Open: open, Fixed: fixed, Page: result,
+		Base: base, Status: status, Search: search, Searching: search.Query != "" || search.Env != "" || search.Sort != inbox.SortLastSeen, ClearURL: listURL(base, status, 1, listSearch{})}
+	for _, f := range []struct{ label, value string }{{"Open", inbox.StatusOpen}, {"Acknowledged", inbox.StatusAcknowledged}, {"Fixed", inbox.StatusFixed}, {"Suppressed", inbox.StatusSuppressed}, {"All", inbox.StatusAll}} {
+		data.Filters = append(data.Filters, filterLink{Label: f.label, URL: listURL(base, f.value, 1, search), Active: f.value == status})
+	}
+	for _, o := range []struct{ value, label string }{{inbox.SortLastSeen, "Last seen"}, {inbox.SortCount, "Most occurrences"}, {inbox.SortFirstSeen, "Newest first seen"}} {
+		data.Sorts = append(data.Sorts, sortOption{Value: o.value, Label: o.label, Selected: o.value == search.Sort})
 	}
 	if result.Page > 1 {
-		data.Prev = pageURL(base, status, result.Page-1)
+		data.Prev = listURL(base, status, result.Page-1, search)
 	}
 	if result.Page < result.Pages {
-		data.Next = pageURL(base, status, result.Page+1)
+		data.Next = listURL(base, status, result.Page+1, search)
 	}
 	name := title
 	if project == nil {
 		name = "your projects"
 	}
-	switch status {
-	case inbox.StatusOpen:
+	switch {
+	case search.Query != "" || search.Env != "":
+		data.Empty = fmt.Sprintf("No errors in %s match this search.", name)
+	case status == inbox.StatusOpen:
 		data.Empty = fmt.Sprintf("No open errors in %s. New errors show up here within seconds.", name)
-	case inbox.StatusAcknowledged:
+	case status == inbox.StatusAcknowledged:
 		data.Empty = fmt.Sprintf("No acknowledged errors in %s. Errors move here when an agent picks them up.", name)
-	case inbox.StatusFixed:
+	case status == inbox.StatusFixed:
 		data.Empty = fmt.Sprintf("Nothing marked fixed in %s yet. Errors move here when their GitHub issue is closed.", name)
+	case status == inbox.StatusSuppressed:
+		data.Empty = fmt.Sprintf("No suppressed errors in %s.", name)
 	default:
 		data.Empty = fmt.Sprintf("No errors in %s yet. New errors show up here within seconds.", name)
 	}

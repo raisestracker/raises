@@ -712,12 +712,21 @@ func (s *Server) listErrors(w http.ResponseWriter, r *http.Request) {
 	compact := query.Get("compact") == "1" || query.Get("compact") == "true"
 	excludeClaimed := query.Get("exclude_claimed") == "1" || query.Get("exclude_claimed") == "true"
 	opts := inbox.ListOptions{Compact: compact, ExcludeClaimed: excludeClaimed}
-	if query.Has("status") || query.Has("page") || query.Has("per_page") {
+	searching := query.Has("q") || query.Has("env") || query.Has("sort")
+	if query.Has("status") || query.Has("page") || query.Has("per_page") || searching {
 		status := inbox.NormalizeStatus(query.Get("status"), inbox.StatusAll)
 		if raw := query.Get("status"); raw != "" && status == inbox.StatusAll && !strings.EqualFold(raw, "all") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be open, acknowledged, fixed or all"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be open, acknowledged, fixed, suppressed or all"})
 			return
 		}
+		sortKey, ok := inbox.NormalizeSort(query.Get("sort"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sort must be last_seen, count or first_seen"})
+			return
+		}
+		opts.Sort = sortKey
+		opts.Query = inbox.NormalizeSearchQuery(query.Get("q"))
+		opts.Env = inbox.NormalizeEnvFilter(query.Get("env"))
 		page, _ := strconv.Atoi(query.Get("page"))
 		perPage, _ := strconv.Atoi(query.Get("per_page"))
 		result, err := s.store.ListPageForUserWithOptions(r.Context(), userID, query.Get("app"), status, page, perPage, opts)
