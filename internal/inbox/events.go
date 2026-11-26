@@ -200,6 +200,10 @@ func (s *Store) CreateEvent(ctx context.Context, token string, input EventInput)
 	if err != nil {
 		return Event{}, err
 	}
+	return s.CreateEventForApp(ctx, app, input)
+}
+
+func (s *Store) CreateEventForApp(ctx context.Context, app App, input EventInput) (Event, error) {
 	input.Message = strings.TrimSpace(input.Message)
 	input.Level = strings.ToLower(strings.TrimSpace(input.Level))
 	if input.Level == "" {

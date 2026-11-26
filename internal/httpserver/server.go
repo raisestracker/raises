@@ -34,6 +34,7 @@ type Store interface {
 	// scoping, so keeping them out of the interface makes that a compile
 	// error instead of a review catch. See TestStoreInterfaceHasNoUnscopedReads.
 	Ingest(context.Context, string, inbox.Notice) (inbox.IngestResult, error)
+	IngestForApp(context.Context, inbox.App, inbox.Notice) (inbox.IngestResult, error)
 	UpsertGitHubUser(context.Context, int64, string, string, string) (inbox.User, error)
 	AssignLegacyProjects(context.Context, int64) error
 	CreateSession(context.Context, int64, time.Duration) (string, inbox.Session, error)
@@ -78,6 +79,7 @@ type Store interface {
 	IssueDeliveryHealthForUser(context.Context, int64) (inbox.IssueDeliveryHealth, error)
 	RetryIssueJobForUser(context.Context, int64, int64) error
 	CreateEvent(context.Context, string, inbox.EventInput) (inbox.Event, error)
+	CreateEventForApp(context.Context, inbox.App, inbox.EventInput) (inbox.Event, error)
 	ListEventsForUser(context.Context, int64, string, string, time.Time, int) ([]inbox.Event, error)
 	GetEventForUser(context.Context, int64, string) (inbox.Event, error)
 	CreateWebhookEndpoint(context.Context, int64, string, []string, inbox.WebhookAuthorization) (inbox.WebhookEndpoint, string, error)
@@ -524,9 +526,10 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Authenticate before minting any per-token state: invalid tokens must
-	// neither bypass the limiter nor grow it. AppByToken is the same lookup
-	// Ingest performs below, so invalid credentials fail identically here.
-	if _, err := s.store.AppByToken(r.Context(), token); err != nil {
+	// neither bypass the limiter nor grow it. The resolved app is passed to
+	// IngestForApp below so ingest avoids a duplicate AppByToken lookup.
+	app, err := s.store.AppByToken(r.Context(), token)
+	if err != nil {
 		if errors.Is(err, inbox.ErrUnauthorized) {
 			if s.failedAuthLimited(r) {
 				tooManyRequests(w)
@@ -562,7 +565,7 @@ func (s *Server) createNotice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "error is required"})
 		return
 	}
-	result, err := s.store.Ingest(r.Context(), token, inbox.Notice{
+	result, err := s.store.IngestForApp(r.Context(), app, inbox.Notice{
 		App:       req.App,
 		Env:       req.Env,
 		Revision:  req.Revision,

@@ -754,14 +754,19 @@ func (s *Store) createAccountScopedKey(ctx context.Context, userID int64, name s
 func (s *Store) AuthenticateAccountKey(ctx context.Context, token string) (int64, string, error) {
 	var userID int64
 	var keyID string
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, id FROM agent_keys WHERE token_hash = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID, &keyID)
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, id, last_used_at_unix FROM agent_keys WHERE token_hash = ? AND can_mint = 1 AND revoked_at_unix IS NULL`, tokenHash).Scan(&userID, &keyID, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", ErrUnauthorized
 	}
 	if err != nil {
 		return 0, "", err
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	now := s.now().UTC().Unix()
+	if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+		_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+	}
 	return userID, keyID, nil
 }
 
@@ -815,14 +820,19 @@ func (s *Store) MintAgentKey(ctx context.Context, userID int64, parentKeyID, nam
 // account key, so it needs an explicit product decision first.
 func (s *Store) AuthenticateAgent(ctx context.Context, token string) (int64, error) {
 	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, HashToken(token)).Scan(&userID)
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, last_used_at_unix FROM agent_keys WHERE token_hash = ? AND revoked_at_unix IS NULL`, tokenHash).Scan(&userID, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrUnauthorized
 	}
 	if err != nil {
 		return 0, err
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	now := s.now().UTC().Unix()
+	if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+		_, _ = s.db.ExecContext(ctx, `UPDATE agent_keys SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+	}
 	return userID, nil
 }
 

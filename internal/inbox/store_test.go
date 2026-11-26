@@ -517,3 +517,77 @@ func TestSQLiteDSNPragmasOnFileAndMemory(t *testing.T) {
 		t.Fatalf(":memory: pragmas busy=%d sync=%d fk=%d", busyTimeout, synchronous, foreignKeys)
 	}
 }
+
+func TestAuthLastUsedDebounceAndFirstUseImmediate(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "debounce.db"), func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	user, err := store.UpsertGitHubUser(ctx, 7701, "debounce-owner", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentTok, _, err := store.CreateAgentKey(ctx, user.ID, "deb-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := store.CreateProject(ctx, user.ID, "DebApp", "deb-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projTok, _, err := store.CreateProjectToken(ctx, user.ID, proj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First use (NULL -> non-NULL) must write immediately so UI flips from "Never used" to "just now".
+	if _, err := store.AuthenticateAgent(ctx, agentTok); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppByToken(ctx, projTok); err != nil {
+		t.Fatal(err)
+	}
+	var agentLast, projLast int64
+	if err := store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM agent_keys WHERE token_hash = ?`, HashToken(agentTok)).Scan(&agentLast); err != nil {
+		t.Fatalf("agent first-use last_used_at_unix should be non-NULL: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM project_tokens WHERE token_hash = ?`, HashToken(projTok)).Scan(&projLast); err != nil {
+		t.Fatalf("project token first-use last_used_at_unix should be non-NULL: %v", err)
+	}
+	if agentLast != now.Unix() || projLast != now.Unix() {
+		t.Fatalf("first-use timestamps mismatch: agent=%d proj=%d want=%d", agentLast, projLast, now.Unix())
+	}
+
+	// Subsequent use within 60s must be debounced (zero writes).
+	t0 := now.Unix()
+	now = now.Add(30 * time.Second)
+	if _, err := store.AuthenticateAgent(ctx, agentTok); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppByToken(ctx, projTok); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM agent_keys WHERE token_hash = ?`, HashToken(agentTok)).Scan(&agentLast)
+	_ = store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM project_tokens WHERE token_hash = ?`, HashToken(projTok)).Scan(&projLast)
+	if agentLast != t0 || projLast != t0 {
+		t.Fatalf("expected debounced last_used_at_unix to remain %d, got agent=%d proj=%d", t0, agentLast, projLast)
+	}
+
+	// After 60s, last_used_at_unix updates again.
+	now = now.Add(31 * time.Second)
+	if _, err := store.AuthenticateAgent(ctx, agentTok); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppByToken(ctx, projTok); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM agent_keys WHERE token_hash = ?`, HashToken(agentTok)).Scan(&agentLast)
+	_ = store.db.QueryRowContext(ctx, `SELECT last_used_at_unix FROM project_tokens WHERE token_hash = ?`, HashToken(projTok)).Scan(&projLast)
+	if agentLast != now.Unix() || projLast != now.Unix() {
+		t.Fatalf("expected updated last_used_at_unix=%d after 60s, got agent=%d proj=%d", now.Unix(), agentLast, projLast)
+	}
+}

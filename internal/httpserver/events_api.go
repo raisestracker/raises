@@ -23,9 +23,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Authenticate before minting any per-token state: invalid tokens must
-	// neither bypass the limiter nor grow it. AppByToken is the same lookup
-	// CreateEvent performs below, so invalid credentials fail identically here.
-	if _, err := s.store.AppByToken(r.Context(), token); err != nil {
+	// neither bypass the limiter nor grow it. The resolved app is passed to
+	// CreateEventForApp below to avoid a duplicate AppByToken lookup.
+	app, err := s.store.AppByToken(r.Context(), token)
+	if err != nil {
 		if errors.Is(err, inbox.ErrUnauthorized) {
 			if s.failedAuthLimited(r) {
 				tooManyRequests(w)
@@ -45,7 +46,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	event, err := s.store.CreateEvent(r.Context(), token, req)
+	event, err := s.store.CreateEventForApp(r.Context(), app, req)
 	if errors.Is(err, inbox.ErrUnauthorized) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return

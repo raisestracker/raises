@@ -15,7 +15,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const defaultKeepNotices = 50
+const (
+	defaultKeepNotices      = 50
+	lastUsedDebounceSeconds = 60
+)
 
 var ErrUnauthorized = errors.New("unauthorized")
 var ErrNotFound = errors.New("not found")
@@ -274,17 +277,36 @@ func (s *Store) UpsertApp(ctx context.Context, name, token, repo string) error {
 func (s *Store) AppByToken(ctx context.Context, token string) (App, error) {
 	var app App
 	var archived sql.NullInt64
+	var lastUsed sql.NullInt64
+	tokenHash := HashToken(token)
+
+	// Indexed primary lookup on project_tokens(token_hash) joined to apps(project_id).
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.project_id, a.slug, a.display_name, a.token_hash, a.github_repo, a.owner_user_id,
-		       a.github_installation_id, a.github_repository_id, a.archived_at_unix
-		FROM apps a
-		LEFT JOIN project_tokens pt ON pt.project_id = a.project_id AND pt.revoked_at_unix IS NULL
-		WHERE a.archived_at_unix IS NULL AND (a.token_hash = ? OR pt.token_hash = ?)
+		       a.github_installation_id, a.github_repository_id, a.archived_at_unix,
+		       pt.last_used_at_unix
+		FROM project_tokens pt
+		JOIN apps a ON a.project_id = pt.project_id
+		WHERE pt.token_hash = ? AND pt.revoked_at_unix IS NULL AND a.archived_at_unix IS NULL
 		LIMIT 1
-	`, HashToken(token), HashToken(token)).Scan(
+	`, tokenHash).Scan(
 		&app.ID, &app.Name, &app.DisplayName, &app.TokenHash, &app.GitHubRepo, &app.OwnerUserID,
-		&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived,
+		&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived, &lastUsed,
 	)
+	fromProjectToken := err == nil
+	if errors.Is(err, sql.ErrNoRows) {
+		// Fallback for legacy apps.token_hash (used in internal/unit tests via UpsertApp).
+		err = s.db.QueryRowContext(ctx, `
+			SELECT project_id, slug, display_name, token_hash, github_repo, owner_user_id,
+			       github_installation_id, github_repository_id, archived_at_unix
+			FROM apps
+			WHERE token_hash = ? AND token_hash != '' AND archived_at_unix IS NULL
+			LIMIT 1
+		`, tokenHash).Scan(
+			&app.ID, &app.Name, &app.DisplayName, &app.TokenHash, &app.GitHubRepo, &app.OwnerUserID,
+			&app.GitHubInstallationID, &app.GitHubRepositoryID, &archived,
+		)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return App{}, ErrUnauthorized
 	}
@@ -295,7 +317,12 @@ func (s *Store) AppByToken(ctx context.Context, token string) (App, error) {
 		t := time.Unix(archived.Int64, 0).UTC()
 		app.ArchivedAt = &t
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE project_tokens SET last_used_at_unix = ? WHERE token_hash = ?`, s.now().UTC().Unix(), HashToken(token))
+	if fromProjectToken {
+		now := s.now().UTC().Unix()
+		if !lastUsed.Valid || now-lastUsed.Int64 >= lastUsedDebounceSeconds {
+			_, _ = s.db.ExecContext(ctx, `UPDATE project_tokens SET last_used_at_unix = ? WHERE token_hash = ?`, now, tokenHash)
+		}
+	}
 	return app, nil
 }
 
@@ -304,6 +331,10 @@ func (s *Store) Ingest(ctx context.Context, token string, notice Notice) (Ingest
 	if err != nil {
 		return IngestResult{}, err
 	}
+	return s.IngestForApp(ctx, app, notice)
+}
+
+func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (IngestResult, error) {
 	if notice.Class == "" {
 		notice.Class = "RuntimeError"
 	}
