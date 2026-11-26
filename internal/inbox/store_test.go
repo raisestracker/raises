@@ -591,3 +591,161 @@ func TestAuthLastUsedDebounceAndFirstUseImmediate(t *testing.T) {
 		t.Fatalf("expected updated last_used_at_unix=%d after 60s, got agent=%d proj=%d", now.Unix(), agentLast, projLast)
 	}
 }
+
+func TestRollingDeploySeenRevisionsRingAndEmptyRevResolvedOnlyCooldown(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	filer := &fakeFiler{}
+	store, err := Open(filepath.Join(t.TempDir(), "rolling.db"), func() time.Time { return now }, filer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertApp(ctx, "widget", "tok", "example/widget"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Interleaved revA / revB rolling deploy produces 0 false regressions;
+	// genuine revC produces 100% regression.
+	baseNotice := Notice{
+		Env:       "production",
+		Class:     "RuntimeError",
+		Message:   "rolling deploy check",
+		Backtrace: []string{"app/jobs/rolling.rb:10:in `perform'"},
+	}
+	nA := baseNotice
+	nA.Revision = "revA"
+	first, err := store.Ingest(ctx, "tok", nA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nB := baseNotice
+	nB.Revision = "revB"
+	if _, err := store.Ingest(ctx, "tok", nB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Resolve(ctx, first.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Interleaved draining traffic from revA and revB (10 events) -> 0 false regressions.
+	for i := 0; i < 10; i++ {
+		n := nA
+		if i%2 == 1 {
+			n = nB
+		}
+		now = now.Add(time.Minute)
+		res, err := store.Ingest(ctx, "tok", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Regressed {
+			t.Fatalf("interleaved rolling deploy iter %d (%s) caused false regression", i, n.Revision)
+		}
+	}
+	// Genuine new revision revC -> 100% regression.
+	nC := baseNotice
+	nC.Revision = "revC"
+	resC, err := store.Ingest(ctx, "tok", nC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resC.Regressed || resC.Group.ResolvedAt != nil || resC.Group.AckedAt != nil {
+		t.Fatalf("genuine revC failed to regress: %+v", resC)
+	}
+
+	// Ring cap of 10: push rev01..rev10 (evicting revA/revB/revC), resolve,
+	// verify rev01..rev10 do not regress while rev11 regresses.
+	for i := 1; i <= 10; i++ {
+		n := baseNotice
+		n.Revision = fmt.Sprintf("rev%02d", i)
+		if _, err := store.Ingest(ctx, "tok", n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Resolve(ctx, first.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 10; i++ {
+		n := baseNotice
+		n.Revision = fmt.Sprintf("rev%02d", i)
+		res, err := store.Ingest(ctx, "tok", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Regressed {
+			t.Fatalf("ring member %s falsely regressed", n.Revision)
+		}
+	}
+	n11 := baseNotice
+	n11.Revision = "rev11"
+	if res, err := store.Ingest(ctx, "tok", n11); err != nil || !res.Regressed {
+		t.Fatalf("rev11 outside ring should regress: res=%+v err=%v", res, err)
+	}
+
+	// 2. Empty-revision cooldown applies STRICTLY to resolved_at + 10m ONLY (NEVER acked_at).
+	emptyNotice := Notice{
+		Env:       "production",
+		Revision:  "",
+		Class:     "TimeoutError",
+		Message:   "no revision configured",
+		Backtrace: []string{"app/jobs/norev.rb:22:in `run'"},
+	}
+	eFirst, err := store.Ingest(ctx, "tok", emptyNotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ack ONLY (not resolved): even 24h later -> 0 false regressions!
+	if _, err := store.Ack(ctx, eFirst.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(24 * time.Hour)
+	eAck24h, err := store.Ingest(ctx, "tok", emptyNotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eAck24h.Regressed {
+		t.Fatalf("empty revision after acked_at + 24h must NEVER regress")
+	}
+	if eAck24h.Group.Status != StatusAcknowledged {
+		t.Fatalf("expected status acknowledged, got %q", eAck24h.Group.Status)
+	}
+
+	// Resolve: within 9m59s -> 0 regressions (cooldown active).
+	if _, err := store.Resolve(ctx, eFirst.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(9*time.Minute + 59*time.Second)
+	eBeforeCooldown, err := store.Ingest(ctx, "tok", emptyNotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eBeforeCooldown.Regressed {
+		t.Fatalf("empty revision before resolved_at + 10m should not regress")
+	}
+
+	// At >= 10m after resolved_at -> 100% regression!
+	now = now.Add(time.Second)
+	eAfterCooldown, err := store.Ingest(ctx, "tok", emptyNotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eAfterCooldown.Regressed || eAfterCooldown.Group.ResolvedAt != nil || eAfterCooldown.Group.AckedAt != nil {
+		t.Fatalf("empty revision at resolved_at + 10m must regress: %+v", eAfterCooldown)
+	}
+
+	// Suppressed group must NEVER regress even after resolved_at + 10m.
+	if _, err := store.Resolve(ctx, eFirst.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Suppress(ctx, eFirst.Group.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(30 * time.Minute)
+	eSuppressed, err := store.Ingest(ctx, "tok", emptyNotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eSuppressed.Regressed {
+		t.Fatalf("suppressed group must never regress")
+	}
+}

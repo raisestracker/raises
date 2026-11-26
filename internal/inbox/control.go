@@ -147,6 +147,7 @@ func (s *Store) ensureLegacyColumns(ctx context.Context) error {
 		"apps.created_at_unix":               "ALTER TABLE apps ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0",
 		"apps.updated_at_unix":               "ALTER TABLE apps ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0",
 		"error_groups.project_id":            "ALTER TABLE error_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+		"error_groups.seen_revisions_json":   "ALTER TABLE error_groups ADD COLUMN seen_revisions_json TEXT NOT NULL DEFAULT '[]'",
 		"error_groups.suppressed_at_unix":    "ALTER TABLE error_groups ADD COLUMN suppressed_at_unix INTEGER",
 		"error_groups.resolved_at_unix":      "ALTER TABLE error_groups ADD COLUMN resolved_at_unix INTEGER",
 		"error_groups.claimed_by":            "ALTER TABLE error_groups ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''",
@@ -343,7 +344,7 @@ func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	columns := `id, project_id, app_name, env, fingerprint, class, location, message, count,
-		first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
+		first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, github_issue_number, github_issue_url,
 		acked_at_unix, suppressed_at_unix, resolved_at_unix,
 		claimed_by, claimed_at_unix, lease_expires_at_unix, claim_note, sample_json`
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE error_groups_new (
@@ -359,6 +360,7 @@ func (s *Store) rebuildErrorGroupsKeyedByProject(ctx context.Context) error {
 		first_seen_unix INTEGER NOT NULL,
 		last_seen_unix INTEGER NOT NULL,
 		last_revision TEXT NOT NULL DEFAULT '',
+		seen_revisions_json TEXT NOT NULL DEFAULT '[]',
 		github_issue_number INTEGER NOT NULL DEFAULT 0,
 		github_issue_url TEXT NOT NULL DEFAULT '',
 		acked_at_unix INTEGER,

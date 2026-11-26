@@ -19,6 +19,9 @@ const (
 	defaultKeepNotices      = 50
 	lastUsedDebounceSeconds = 60
 
+	maxSeenRevisions             = 10
+	emptyRevisionResolveCooldown = 10 * time.Minute
+
 	DefaultClaimTTL  = 15 * time.Minute
 	MaxClaimTTL      = 2 * time.Hour
 	maxClaimAgentLen = 80
@@ -235,6 +238,7 @@ func (s *Store) initialize(ctx context.Context) error {
 			first_seen_unix INTEGER NOT NULL,
 			last_seen_unix INTEGER NOT NULL,
 			last_revision TEXT NOT NULL DEFAULT '',
+			seen_revisions_json TEXT NOT NULL DEFAULT '[]',
 			github_issue_number INTEGER NOT NULL DEFAULT 0,
 			github_issue_url TEXT NOT NULL DEFAULT '',
 			acked_at_unix INTEGER,
@@ -388,20 +392,21 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		group          Group
-		ackedUnix      sql.NullInt64
-		suppressedUnix sql.NullInt64
-		resolvedUnix   sql.NullInt64
-		sampleRaw      string
+		group            Group
+		seenRevisionsRaw string
+		ackedUnix        sql.NullInt64
+		suppressedUnix   sql.NullInt64
+		resolvedUnix     sql.NullInt64
+		sampleRaw        string
 	)
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, project_id, app_name, env, fingerprint, class, location, message, count,
-		       first_seen_unix, last_seen_unix, last_revision, github_issue_number, github_issue_url,
+		       first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, github_issue_number, github_issue_url,
 		       acked_at_unix, suppressed_at_unix, resolved_at_unix, sample_json
 		FROM error_groups WHERE project_id = ? AND env = ? AND fingerprint = ?
 	`, app.ID, notice.Env, fp).Scan(
 		&group.ID, &group.ProjectID, &group.App, &group.Env, &group.Fingerprint, &group.Class, &group.Location, &group.Message, &group.Count,
-		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &group.GitHubIssueNumber, &group.GitHubIssueURL,
+		newUnix(&group.FirstSeen), newUnix(&group.LastSeen), &group.LastRevision, &seenRevisionsRaw, &group.GitHubIssueNumber, &group.GitHubIssueURL,
 		&ackedUnix, &suppressedUnix, &resolvedUnix, &sampleRaw,
 	)
 
@@ -409,8 +414,10 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 	if err != nil && !created {
 		return IngestResult{}, err
 	}
+	var seenRevs []string
 	if !created {
 		_ = json.Unmarshal([]byte(sampleRaw), &group.Sample)
+		seenRevs = parseSeenRevisions(seenRevisionsRaw, group.LastRevision)
 		if ackedUnix.Valid {
 			t := time.Unix(ackedUnix.Int64, 0).UTC()
 			group.AckedAt = &t
@@ -439,17 +446,35 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 		return IngestResult{}, err
 	}
 
+	updatedSeenRevs, revAlreadySeen := recordSeenRevision(seenRevs, notice.Revision, maxSeenRevisions)
+	seenRevsBytes, err := json.Marshal(updatedSeenRevs)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	seenRevsJSON := string(seenRevsBytes)
+
 	suppressed := group.SuppressedAt != nil
-	regressed := !created && !suppressed && group.AckedAt != nil && notice.Revision != "" && notice.Revision != group.LastRevision
+	regressed := false
+	if !created && !suppressed {
+		if notice.Revision != "" {
+			if (group.AckedAt != nil || group.ResolvedAt != nil) && !revAlreadySeen {
+				regressed = true
+			}
+		} else if group.ResolvedAt != nil && notice.ReceivedAt.Sub(*group.ResolvedAt) >= emptyRevisionResolveCooldown {
+			// Empty-revision cooldown applies strictly to resolved_at + 10m ONLY
+			// (never acked_at, preventing false regression storms on open PRs).
+			regressed = true
+		}
+	}
 	nowUnix := notice.ReceivedAt.Unix()
 
 	if created {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO error_groups (
 				project_id, app_name, env, fingerprint, class, location, message, count,
-				first_seen_unix, last_seen_unix, last_revision, sample_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
-		`, app.ID, app.Name, notice.Env, fp, notice.Class, location, notice.Message, nowUnix, nowUnix, notice.Revision, string(payload))
+				first_seen_unix, last_seen_unix, last_revision, seen_revisions_json, sample_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+		`, app.ID, app.Name, notice.Env, fp, notice.Class, location, notice.Message, nowUnix, nowUnix, notice.Revision, seenRevsJSON, string(payload))
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -472,7 +497,9 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 	} else {
 		group.Count++
 		group.LastSeen = notice.ReceivedAt
-		group.LastRevision = notice.Revision
+		if notice.Revision != "" {
+			group.LastRevision = notice.Revision
+		}
 		group.Message = notice.Message
 		if regressed {
 			group.AckedAt = nil
@@ -480,11 +507,11 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE error_groups
-			SET count = ?, last_seen_unix = ?, last_revision = ?, message = ?,
+			SET count = ?, last_seen_unix = ?, last_revision = ?, seen_revisions_json = ?, message = ?,
 			    acked_at_unix = CASE WHEN ? THEN NULL ELSE acked_at_unix END,
 			    resolved_at_unix = CASE WHEN ? THEN NULL ELSE resolved_at_unix END
 			WHERE id = ?
-		`, group.Count, nowUnix, notice.Revision, notice.Message, boolToInt(regressed), boolToInt(regressed), group.ID)
+		`, group.Count, nowUnix, group.LastRevision, seenRevsJSON, notice.Message, boolToInt(regressed), boolToInt(regressed), group.ID)
 		if err != nil {
 			return IngestResult{}, err
 		}
@@ -865,6 +892,65 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func parseSeenRevisions(raw, fallbackLastRev string) []string {
+	var revs []string
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &revs)
+	}
+	clean := make([]string, 0, len(revs)+1)
+	seen := make(map[string]struct{}, len(revs)+1)
+	for _, r := range revs {
+		if r == "" {
+			continue
+		}
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		clean = append(clean, r)
+	}
+	if fallbackLastRev != "" {
+		if _, dup := seen[fallbackLastRev]; !dup {
+			clean = append(clean, fallbackLastRev)
+		}
+	}
+	if len(clean) > maxSeenRevisions {
+		clean = clean[len(clean)-maxSeenRevisions:]
+	}
+	return clean
+}
+
+// recordSeenRevision tracks up to max recent non-empty revisions in recency
+// order and reports whether rev was already present in the ring.
+func recordSeenRevision(existing []string, rev string, max int) ([]string, bool) {
+	if rev == "" {
+		if existing == nil {
+			return []string{}, false
+		}
+		return existing, false
+	}
+	idx := -1
+	for i, v := range existing {
+		if v == rev {
+			idx = i
+			break
+		}
+	}
+	out := make([]string, 0, len(existing)+1)
+	if idx >= 0 {
+		out = append(out, existing[:idx]...)
+		out = append(out, existing[idx+1:]...)
+		out = append(out, rev)
+		return out, true
+	}
+	out = append(out, existing...)
+	out = append(out, rev)
+	if max > 0 && len(out) > max {
+		out = out[len(out)-max:]
+	}
+	return out, false
 }
 
 func issueTitle(group Group) string {
