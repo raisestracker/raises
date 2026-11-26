@@ -1,6 +1,11 @@
 package inbox
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+	"testing"
+)
 
 func TestFingerprintUsesInAppFrame(t *testing.T) {
 	fp, loc := Fingerprint("NoMethodError", []string{
@@ -59,5 +64,192 @@ func TestFingerprintUsesSourceWithoutApplicationFrame(t *testing.T) {
 	withoutSource, _ := Fingerprint("RuntimeError", []string{"app/jobs/foo.rb:3:in `perform`"}, nil)
 	if inApp != withoutSource {
 		t.Fatal("application frames should ignore context source")
+	}
+}
+
+func TestLegacyRailsAndGoFingerprintsBitIdentical(t *testing.T) {
+	cases := []struct {
+		name      string
+		class     string
+		backtrace []string
+		wantInput string
+		wantLoc   string
+	}{
+		{
+			name:  "rails_order_model",
+			class: "NoMethodError",
+			backtrace: []string{
+				"/usr/local/bundle/ruby/3.3.0/gems/rack-3.0/lib/rack.rb:12:in `call'",
+				"/srv/rails/app/models/order.rb:42:in `total'",
+			},
+			wantInput: "NoMethodError|app/models/order.rb:42",
+			wantLoc:   "app/models/order.rb:42",
+		},
+		{
+			name:  "rails_with_earlier_non_gem_lib_frame",
+			class: "ArgumentError",
+			backtrace: []string{
+				"/srv/rails/lib/custom_middleware.rb:19:in `call'",
+				"/srv/rails/app/controllers/orders_controller.rb:77:in `create'",
+			},
+			wantInput: "ArgumentError|app/controllers/orders_controller.rb:77",
+			wantLoc:   "app/controllers/orders_controller.rb:77",
+		},
+		{
+			name:  "go_prefixed_app_frame",
+			class: "*errors.errorString",
+			backtrace: []string{
+				"net/http/server.go:3340 in net/http.(*conn).serve",
+				"app/internal/importer/run.go:42 in example.com/widget/internal/importer.Run",
+			},
+			wantInput: "*errors.errorString|app/internal/importer/run.go:42",
+			wantLoc:   "app/internal/importer/run.go:42",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sum := sha256.Sum256([]byte(tc.wantInput))
+			wantFP := hex.EncodeToString(sum[:16])
+			gotFP, gotLoc := Fingerprint(tc.class, tc.backtrace, nil)
+			if gotLoc != tc.wantLoc {
+				t.Fatalf("location = %q, want %q", gotLoc, tc.wantLoc)
+			}
+			if gotFP != wantFP {
+				t.Fatalf("fingerprint = %q, want %q (legacy bit-identity broken)", gotFP, wantFP)
+			}
+		})
+	}
+}
+
+func TestMultiStackFallbackPreventsStdlibHijack(t *testing.T) {
+	cases := []struct {
+		name      string
+		class     string
+		backtrace []string
+		wantSub   string
+		forbidSub string
+	}{
+		{
+			name:  "go_unprefixed_internal_after_runtime",
+			class: "runtime.errorString",
+			backtrace: []string{
+				"/usr/local/go/src/runtime/panic.go:770 in runtime.gopanic",
+				"internal/runtime/maps/map.go:100 in internal/runtime/maps.mapaccess1",
+				"/usr/local/go/src/net/http/server.go:2220 in net/http.HandlerFunc.ServeHTTP",
+				"internal/billing/charge.go:88 in example.com/acme/internal/billing.Charge",
+			},
+			wantSub:   "internal/billing/charge.go:88",
+			forbidSub: "runtime/",
+		},
+		{
+			name:  "node_src_after_node_modules",
+			class: "TypeError",
+			backtrace: []string{
+				"at node:internal/process/task_queues:95:5",
+				"at Layer.handle (/srv/web/node_modules/express/lib/router/layer.js:95:5)",
+				"at next (/srv/web/node_modules/express/lib/router/route.js:144:13)",
+				"at createSession (/srv/web/src/checkout.ts:54:12)",
+			},
+			wantSub:   "/srv/web/src/checkout.ts:54",
+			forbidSub: "node_modules",
+		},
+		{
+			name:  "python_service_after_site_packages_and_stdlib",
+			class: "KeyError",
+			backtrace: []string{
+				`File "/usr/lib/python3.11/json/__init__.py", line 346, in loads`,
+				`File "/app/.venv/lib/python3.11/site-packages/requests/api.py", line 59, in request`,
+				`File "/srv/payments/services/payments.py", line 42, in charge`,
+			},
+			wantSub:   "/srv/payments/services/payments.py:42",
+			forbidSub: "site-packages",
+		},
+		{
+			name:  "swift_app_after_libswift_uikit_foundation",
+			class: "FatalError",
+			backtrace: []string{
+				"0   libswiftCore.dylib                  0x000000018a123456 _assertionFailure + 123",
+				"1   UIKitCore                           0x000000018b123456 -[UIApplication sendAction:] + 96",
+				"2   Foundation                          0x000000018c123456 -[NSRunLoop run] + 44",
+				"3   MyApp                               0x0000000100045678 CartViewModel.checkout() (CartViewModel.swift:88)",
+			},
+			wantSub:   "CartViewModel.swift:88",
+			forbidSub: "libswift",
+		},
+		{
+			name:  "rails_in_app_after_gems",
+			class: "NoMethodError",
+			backtrace: []string{
+				"/usr/local/bundle/ruby/3.3.0/gems/actionpack-7.1.3/lib/action_controller/metal.rb:227:in `dispatch'",
+				"/srv/orders/app/models/order.rb:11:in `total_cents'",
+			},
+			wantSub:   "app/models/order.rb:11",
+			forbidSub: "gems/",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp, loc := Fingerprint(tc.class, tc.backtrace, nil)
+			if fp == "" {
+				t.Fatal("empty fingerprint")
+			}
+			if !strings.Contains(loc, tc.wantSub) {
+				t.Fatalf("location = %q, want substring %q", loc, tc.wantSub)
+			}
+			if strings.Contains(loc, tc.forbidSub) {
+				t.Fatalf("location = %q, must not contain %q", loc, tc.forbidSub)
+			}
+		})
+	}
+}
+
+func TestClassifyFrameParsesMetadata(t *testing.T) {
+	f := ClassifyFrame(`at createSession (/srv/web/src/checkout.ts:54:12)`)
+	if !f.InApp || f.File != "/srv/web/src/checkout.ts" || f.Line != 54 || f.Function != "createSession" {
+		t.Fatalf("unexpected JS frame: %+v", f)
+	}
+	py := ClassifyFrame(`File "/srv/payments/services/payments.py", line 42, in charge`)
+	if !py.InApp || py.File != "/srv/payments/services/payments.py" || py.Line != 42 || py.Function != "charge" {
+		t.Fatalf("unexpected Python frame: %+v", py)
+	}
+	pyStd := ClassifyFrame(`File "/usr/lib/python3.11/json/__init__.py", line 346, in loads`)
+	if pyStd.InApp {
+		t.Fatalf("python stdlib frame should not be in_app: %+v", pyStd)
+	}
+	goMod := ClassifyFrame(`/go/pkg/mod/github.com/lib/pq@v1.10.9/conn.go:50 in github.com/lib/pq.(*conn).Query`)
+	if goMod.InApp {
+		t.Fatalf("go pkg/mod frame should not be in_app: %+v", goMod)
+	}
+	swiftUIKit := ClassifyFrame(`1   UIKit                               0x000000018b123456 -[UIView layoutSubviews] + 44`)
+	if swiftUIKit.InApp {
+		t.Fatalf("UIKit frame should not be in_app: %+v", swiftUIKit)
+	}
+}
+
+func BenchmarkClassifyFrameNotice(b *testing.B) {
+	trace := []string{
+		"/usr/local/go/src/runtime/panic.go:770 in runtime.gopanic",
+		"internal/runtime/maps/map.go:100 in internal/runtime/maps.mapaccess1",
+		"/usr/local/go/src/net/http/server.go:2220 in net/http.HandlerFunc.ServeHTTP",
+		"at Layer.handle (/srv/web/node_modules/express/lib/router/layer.js:95:5)",
+		`File "/usr/lib/python3.11/json/__init__.py", line 346, in loads`,
+		`File "/opt/venv/lib/python3.11/site-packages/requests/api.py", line 59, in request`,
+		"0   libswiftCore.dylib                  0x000000018a123456 _assertionFailure + 123",
+		"1   UIKitCore                           0x000000018b123456 -[UIApplication sendAction:] + 96",
+		"2   Foundation                          0x000000018c123456 -[NSRunLoop run] + 44",
+		"internal/billing/charge.go:88 in example.com/acme/internal/billing.Charge",
+	}
+	// 30-frame realistic trace
+	full := make([]string, 0, 30)
+	for i := 0; i < 3; i++ {
+		full = append(full, trace...)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, frame := range full {
+			_ = ClassifyFrame(frame)
+		}
 	}
 }
