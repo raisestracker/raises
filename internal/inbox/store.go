@@ -547,12 +547,14 @@ func (s *Store) IngestForApp(ctx context.Context, app App, notice Notice) (Inges
 			return IngestResult{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM notices WHERE group_id = ? AND id NOT IN (
-			SELECT id FROM notices WHERE group_id = ? ORDER BY id DESC LIMIT ?
-		)
-	`, group.ID, group.ID, s.keepNotices); err != nil {
-		return IngestResult{}, err
+	if !created && group.Count > s.keepNotices {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM notices WHERE group_id = ? AND id NOT IN (
+				SELECT id FROM notices WHERE group_id = ? ORDER BY id DESC LIMIT ?
+			)
+		`, group.ID, group.ID, s.keepNotices); err != nil {
+			return IngestResult{}, err
+		}
 	}
 
 	issueJobEnqueued := false
