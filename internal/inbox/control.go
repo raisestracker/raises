@@ -1005,6 +1005,93 @@ func (s *Store) CreateProject(ctx context.Context, userID int64, name, slug stri
 	return s.GetProject(ctx, userID, id)
 }
 
+// SlugFromName derives a project slug from a display name: lowercase ASCII
+// letters and digits joined by single hyphens, trimmed to the slug limit.
+func SlugFromName(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			dash = false
+			b.WriteRune(r)
+		default:
+			dash = true
+		}
+		if b.Len() >= maxProjectSlugLength {
+			break
+		}
+	}
+	out := b.String()
+	if len(out) > maxProjectSlugLength {
+		out = out[:maxProjectSlugLength]
+	}
+	return strings.Trim(out, "-")
+}
+
+// CreateProjectWithToken creates a project and its first ingestion token in
+// one SQLite transaction under quotaMu, so a failure at any step leaves no
+// orphan project and concurrent creators cannot exceed the project limit.
+// The plaintext token is returned once; only its hash is stored.
+func (s *Store) CreateProjectWithToken(ctx context.Context, userID int64, name, slug string) (Project, string, ProjectToken, error) {
+	name = strings.TrimSpace(name)
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		slug = SlugFromName(name)
+	}
+	if name == "" || len(name) > maxProjectNameLength || len(slug) > maxProjectSlugLength || !slugPattern.MatchString(slug) {
+		return Project{}, "", ProjectToken{}, fmt.Errorf("valid name and slug are required")
+	}
+	projectID, err := randomID("prj_", 12)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	secret, err := randomID("", 32)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	tokenID, err := randomID("ptk_", 12)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	prefix := secret[:8]
+	token := "raises_ingest_" + prefix + "_" + secret[8:]
+
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE owner_user_id=? AND archived_at_unix IS NULL`, userID).Scan(&count); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if s.projectLimitReached(userID, count) {
+		return Project{}, "", ProjectToken{}, fmt.Errorf("project limit reached")
+	}
+	now := s.now().UTC()
+	internalName := fmt.Sprintf("%d:%s", userID, slug)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO apps(name,slug,token_hash,github_repo,project_id,display_name,owner_user_id,created_at_unix,updated_at_unix) VALUES(?,?, '', '', ?, ?, ?, ?, ?)`, internalName, slug, projectID, name, userID, now.Unix(), now.Unix()); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO project_tokens(id,project_id,prefix,token_hash,created_at_unix) VALUES(?,?,?,?,?)`, tokenID, projectID, prefix, HashToken(token), now.Unix()); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	project, err := scanProject(tx.QueryRowContext(ctx, `SELECT project_id,slug,display_name,github_repo,github_installation_id,github_repository_id,archived_at_unix,created_at_unix,updated_at_unix FROM apps WHERE owner_user_id=? AND project_id=?`, userID, projectID))
+	if err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Project{}, "", ProjectToken{}, err
+	}
+	return project, token, ProjectToken{ID: tokenID, Prefix: prefix, CreatedAt: now}, nil
+}
+
 func (s *Store) UpdateProject(ctx context.Context, userID int64, id, name string) (Project, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxProjectNameLength {

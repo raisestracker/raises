@@ -141,6 +141,15 @@
     });
   }
 
+  // A one-time secret revealed by a plain form POST (e.g. a new project's
+  // RAISES_TOKEN) is selected so it can be copied immediately.
+  const autofocus = document.querySelector("textarea[data-autofocus]");
+  if (autofocus && autofocus.value) {
+    autofocus.scrollIntoView({ block: "nearest" });
+    autofocus.focus();
+    autofocus.select();
+  }
+
   // A plain form POST still renders the reveal server-side on a full
   // reload: bring a freshly revealed secret into view instead of
   // leaving the reader at the top of the page.
